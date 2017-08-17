@@ -27,12 +27,12 @@ module DatastoreServer
   # we write its configuration files.
   NAME = "appscale-datastore_server"
 
-  # If we fail to get the number of processors we set our default number of 
+  # If we fail to get the number of processors we set our default number of
   # datastore servers to this value.
   DEFAULT_NUM_SERVERS = 3
 
   # Datastore server processes to core multiplier.
-  MULTIPLIER = 2
+  MULTIPLIER = 4
 
   # Starts a Datastore Server on this machine. We don't want to monitor
   # it ourselves, so just tell monit to start it and watch it.
@@ -40,12 +40,12 @@ module DatastoreServer
     datastore_server = self.get_executable_name
     ports = self.get_server_ports()
 
-    env_vars = { 
+    env_vars = {
       'APPSCALE_HOME' => APPSCALE_HOME,
-      "MASTER_IP" => master_ip, 
-      "LOCAL_DB_IP" => db_local_ip 
+      "MASTER_IP" => master_ip,
+      "LOCAL_DB_IP" => db_local_ip
     }
-  
+
     start_cmd = "#{datastore_server} --type #{table}"
     start_cmd << ' --verbose' if verbose
     MonitInterface.start(:datastore_server, start_cmd, ports, env_vars)
@@ -71,7 +71,7 @@ module DatastoreServer
     num_procs = `cat /proc/cpuinfo | grep processor | wc -l`.to_i
     if num_procs == 0
       return DEFAULT_NUM_SERVERS
-    else 
+    else
       return num_procs * MULTIPLIER
     end
   end
@@ -88,7 +88,7 @@ module DatastoreServer
     return server_ports
   end
 
-  
+
   # Return the name of the executable of the datastore server.
   def self.get_executable_name
     return `which appscale-datastore`.chomp
