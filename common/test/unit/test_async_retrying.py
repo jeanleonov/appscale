@@ -1,7 +1,7 @@
 from mock import patch, MagicMock, call
 from tornado import testing, gen
 
-from appscale.common import async_retrying
+from appscale.common import async_retrying, retrying
 
 
 class TestRetryCoroutine(testing.AsyncTestCase):
@@ -28,7 +28,7 @@ class TestRetryCoroutine(testing.AsyncTestCase):
   @patch.object(async_retrying.gen, 'sleep')
   @patch.object(async_retrying.logging, 'error')
   @patch.object(async_retrying.logging, 'warning')
-  @patch.object(async_retrying.random, 'random')
+  @patch.object(retrying.random, 'random')
   @testing.gen_test
   def test_backoff_and_logging(self, random_mock, warning_mock, error_mock,
                                sleep_mock):
@@ -38,7 +38,7 @@ class TestRetryCoroutine(testing.AsyncTestCase):
 
     @async_retrying.retry_coroutine(
       backoff_base=3, backoff_multiplier=0.1, backoff_threshold=2,
-      max_retries=4)
+      max_retries=4, randomize_backoff=True)
     def do_work():
       raise ValueError(u"Error \u26a0!")
 
@@ -50,17 +50,17 @@ class TestRetryCoroutine(testing.AsyncTestCase):
 
     # Check backoff sleep calls (0.1 * (3 ** attempt) * random_value).
     sleep_args = [args[0] for args, kwargs in sleep_mock.call_args_list]
-    self.assertAlmostEqual(sleep_args[0], 0.33, 2)
-    self.assertAlmostEqual(sleep_args[1], 0.99, 2)
-    self.assertAlmostEqual(sleep_args[2], 2.2, 2)
-    self.assertAlmostEqual(sleep_args[3], 2.2, 2)
+    self.assertAlmostEqual(sleep_args[0], 0.11, 2)
+    self.assertAlmostEqual(sleep_args[1], 0.36, 2)
+    self.assertAlmostEqual(sleep_args[2], 1.20, 2)
+    self.assertAlmostEqual(sleep_args[3], 2.20, 2)
 
     # Verify logged warnings.
     expected_warnings = [
-      "Retry #1 in 0.3s",
-      "Retry #2 in 1.0s",
-      "Retry #3 in 2.2s",
-      "Retry #4 in 2.2s",
+      "Retry #1 in 0.11s",
+      "Retry #2 in 0.36s",
+      "Retry #3 in 1.20s",
+      "Retry #4 in 2.20s",
     ]
     self.assertEqual(len(expected_warnings), len(warning_mock.call_args_list))
     expected_messages = iter(expected_warnings)
@@ -110,8 +110,10 @@ class TestRetryCoroutine(testing.AsyncTestCase):
     self.assertEqual(len(sleep_args), 2)
     self.assertEqual(len(warning_mock.call_args_list), 2)
     # Verify errors
-    self.assertEqual(err_mock.call_args_list,
-                     [call("Giving up retrying after 3 attempts during 60.0s")])
+    self.assertEqual(
+      err_mock.call_args_list,
+      [call("Giving up retrying after 3 attempts during 60.00s")]
+    )
 
   @patch.object(async_retrying.gen, 'sleep')
   @testing.gen_test
@@ -165,7 +167,7 @@ class TestRetryWatchCoroutine(testing.AsyncTestCase):
   @patch.object(async_retrying.locks.Condition, 'wait')
   @patch.object(async_retrying.logging, 'error')
   @patch.object(async_retrying.logging, 'warning')
-  @patch.object(async_retrying.random, 'random')
+  @patch.object(retrying.random, 'random')
   @testing.gen_test
   def test_backoff_and_logging(self, random_mock, warning_mock, error_mock,
                                wait_mock, current_io_loop_mock):
@@ -179,7 +181,7 @@ class TestRetryWatchCoroutine(testing.AsyncTestCase):
 
     persistent_work = async_retrying.retry_data_watch_coroutine(
       "node", do_work, backoff_base=3, backoff_multiplier=0.1,
-      backoff_threshold=2, max_retries=4
+      backoff_threshold=2, max_retries=4, randomize_backoff=True
     )
     try:
       yield persistent_work()
@@ -189,17 +191,17 @@ class TestRetryWatchCoroutine(testing.AsyncTestCase):
 
     # Check backoff sleep calls (0.1 * (3 ** attempt) * random_value).
     sleep_args = [args[0] for args, kwargs in wait_mock.call_args_list]
-    self.assertAlmostEqual(sleep_args[0], 100.33, 2)
-    self.assertAlmostEqual(sleep_args[1], 100.99, 2)
-    self.assertAlmostEqual(sleep_args[2], 102.2, 2)
-    self.assertAlmostEqual(sleep_args[3], 102.2, 2)
+    self.assertAlmostEqual(sleep_args[0], 100.11, 2)
+    self.assertAlmostEqual(sleep_args[1], 100.36, 2)
+    self.assertAlmostEqual(sleep_args[2], 101.20, 2)
+    self.assertAlmostEqual(sleep_args[3], 102.20, 2)
 
     # Verify logged warnings.
     expected_warnings = [
-      "Retry #1 in 0.3s",
-      "Retry #2 in 1.0s",
-      "Retry #3 in 2.2s",
-      "Retry #4 in 2.2s",
+      "Retry #1 in 0.11s",
+      "Retry #2 in 0.36s",
+      "Retry #3 in 1.20s",
+      "Retry #4 in 2.20s",
     ]
     self.assertEqual(len(expected_warnings), len(warning_mock.call_args_list))
     expected_messages = iter(expected_warnings)
@@ -209,7 +211,7 @@ class TestRetryWatchCoroutine(testing.AsyncTestCase):
       self.assertTrue(call_args_kwargs[0][0].endswith(error_message))
     # Verify errors
     self.assertEqual(error_mock.call_args_list,
-                     [call("Giving up retrying after 5 attempts during 0.0s")])
+                     [call("Giving up retrying after 5 attempts during 0.00s")])
 
   @patch.object(async_retrying.locks.Condition, 'wait')
   @testing.gen_test

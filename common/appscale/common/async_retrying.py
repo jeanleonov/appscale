@@ -1,7 +1,6 @@
 import collections
 import functools
 import logging
-import random
 import traceback
 import time
 
@@ -10,8 +9,8 @@ from tornado.ioloop import IOLoop
 
 from appscale.common.retrying import (
   DEFAULT_BACKOFF_BASE, DEFAULT_BACKOFF_MULTIPLIER, DEFAULT_BACKOFF_THRESHOLD,
-  DEFAULT_MAX_RETRIES, DEFAULT_RETRYING_TIMEOUT, DEFAULT_RETRY_ON_EXCEPTION,
-  _Retry
+  DEFAULT_MAX_RETRIES, DEFAULT_RETRYING_TIMEOUT, DEFAULT_RANDOMIZE,
+  DEFAULT_RETRY_ON_EXCEPTION, _Retry, BackoffSequence
 )
 
 
@@ -45,43 +44,40 @@ class _RetryCoroutine(_Retry):
 
         check_exception = check_exception_in_list
 
-      retries = 0
-      backoff = self.backoff_multiplier
-      start_time = time.time()
-      while True:
-        # Start of retrying iteration
+      backoff_sequence = BackoffSequence(
+        base=self.backoff_base,
+        multiplier=self.backoff_multiplier,
+        threshold=self.backoff_threshold,
+        max_retries=self.max_retries,
+        timeout=self.retrying_timeout,
+        randomize=self.randomize_backoff
+      )
+      for backoff in backoff_sequence:
         try:
           # Call original coroutine
           result = yield coroutine(*args, **kwargs)
           break
 
         except Exception as err:
-          retries += 1
-
-          # Check if need to retry
-          if self.max_retries is not None and retries > self.max_retries:
-            logging.error("Giving up retrying after {} attempts during {:0.1f}s"
-                          .format(retries,  - start_time))
-            raise
-          timeout = self.retrying_timeout
-          if timeout and time.time() - start_time > timeout:
-            logging.error("Giving up retrying after {} attempts during {:0.1f}s"
-                          .format(retries, time.time() - start_time))
+          # Check if max retries or timeout is exceeded
+          if not backoff_sequence.has_next():
+            retrying_time = time.time() - backoff_sequence.start_time
+            logging.error(
+              "Giving up retrying after {} attempts during {:0.2f}s"
+                .format(backoff_sequence.attempt_number, retrying_time)
+            )
             raise
           if not check_exception(err):
             raise
 
-          # Proceed with exponential backoff
-          backoff = min(backoff * self.backoff_base, self.backoff_threshold)
-          sleep_time = backoff * (random.random() * 0.3 + 0.85)
           # Report problem to logs
           stacktrace = traceback.format_exc()
-          msg = "Retry #{} in {:0.1f}s".format(retries, sleep_time)
+          msg = "Retry #{} in {:0.2f}s".format(
+            backoff_sequence.attempt_number, backoff)
           logging.warning(stacktrace + msg)
 
-          yield gen.sleep(sleep_time)
-
-        # End of retrying iteration
+          # Sleep
+          yield gen.sleep(backoff)
 
       raise gen.Return(result)
 
@@ -93,6 +89,7 @@ retry_coroutine = _RetryCoroutine(
   backoff_threshold=DEFAULT_BACKOFF_THRESHOLD,
   max_retries=DEFAULT_MAX_RETRIES,
   retrying_timeout=DEFAULT_RETRYING_TIMEOUT,
+  randomize_backoff=DEFAULT_RANDOMIZE,
   retry_on_exception=DEFAULT_RETRY_ON_EXCEPTION
 )
 
@@ -123,6 +120,7 @@ class _PersistentWatch(object):
                backoff_threshold=DEFAULT_BACKOFF_THRESHOLD,
                max_retries=DEFAULT_MAX_RETRIES,
                retrying_timeout=DEFAULT_RETRYING_TIMEOUT,
+               randomize_backoff=DEFAULT_RANDOMIZE,
                retry_on_exception=DEFAULT_RETRY_ON_EXCEPTION):
     """ Wraps func with retry mechanism which runs up to max_retries attempts
     with exponential backoff (sleep = backoff_multiplier * backoff_base**X).
@@ -136,6 +134,7 @@ class _PersistentWatch(object):
       max_retries: an integer indicating maximum number of retries.
       retrying_timeout: a number indicating number of seconds after which
         retrying should be stopped.
+      randomize_backoff: a flag telling decorator to randomize backoff.
       retry_on_exception: a function receiving one argument: exception object
         and returning True if retry makes sense for such exception.
         Alternatively you can pass list of exception types for which
@@ -157,11 +156,15 @@ class _PersistentWatch(object):
       else:
         check_exception = retry_on_exception
 
-      retries = 0
-      backoff = backoff_multiplier
-      start_time = time.time()
+      backoff_sequence = BackoffSequence(
+        base=backoff_base,
+        multiplier=backoff_multiplier,
+        threshold=backoff_threshold,
+        max_retries=max_retries,
+        timeout=retrying_timeout,
+        randomize=randomize_backoff
+      )
       node_lock = self._locks[node]
-      result = None
 
       # Wake older update calls (*)
       node_lock.condition.notify_all()
@@ -169,7 +172,7 @@ class _PersistentWatch(object):
       with (yield node_lock.lock.acquire()):
         node_lock.waiters -= 1
 
-        while True:
+        for backoff in backoff_sequence:
           # Start of retrying iteration
           try:
             result = func(*args, **kwargs)
@@ -177,19 +180,16 @@ class _PersistentWatch(object):
               result = yield result
             break
 
+          except gen.Return:
+            raise
           except Exception as e:
-            retries += 1
-
-            # Check if need to retry
-            if max_retries is not None and retries > max_retries:
+            # Check if max retries or timeout is exceeded
+            if not backoff_sequence.has_next():
+              retrying_time = time.time() - backoff_sequence.start_time
               logging.error(
-                "Giving up retrying after {} attempts during {:0.1f}s"
-                .format(retries, time.time()-start_time))
-              fail = True
-            elif retrying_timeout and time.time()-start_time > retrying_timeout:
-              logging.error(
-                "Giving up retrying after {} attempts during {:0.1f}s"
-                .format(retries, time.time()-start_time))
+                "Giving up retrying after {} attempts during {:0.2f}s"
+                  .format(backoff_sequence.attempt_number, retrying_time)
+              )
               fail = True
             elif not check_exception(e):
               fail = True
@@ -201,17 +201,15 @@ class _PersistentWatch(object):
                 del self._locks[node]
               raise
 
-            # Proceed with exponential backoff
-            backoff = min(backoff * backoff_base, backoff_threshold)
-            sleep_time = backoff * (random.random() * 0.3 + 0.85)
             # Report problem to logs
             stacktrace = traceback.format_exc()
-            msg = "Retry #{} in {:0.1f}s".format(retries, sleep_time)
+            msg = "Retry #{} in {:0.2f}s".format(
+              backoff_sequence.attempt_number, backoff)
             logging.warning(stacktrace + msg)
 
             # (*) Sleep with one eye open, give up if newer update wakes you
             now = IOLoop.current().time()
-            interrupted = yield node_lock.condition.wait(now + sleep_time)
+            interrupted = yield node_lock.condition.wait(now + backoff)
             if interrupted or node_lock.waiters:
               logging.info("Giving up retrying because newer update came up")
               if not node_lock.waiters:

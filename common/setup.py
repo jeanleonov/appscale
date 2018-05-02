@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
   name='appscale-common',
-  version='0.0.3',
+  version='0.0.4',
   description='Modules used by multiple AppScale packages',
   author='AppScale Systems, Inc.',
   url='https://github.com/AppScale/appscale',

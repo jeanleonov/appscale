@@ -1,4 +1,8 @@
 import unittest
+
+import logging
+
+import time
 from mock import patch, call
 
 from appscale.common import retrying
@@ -34,7 +38,7 @@ class TestRetry(unittest.TestCase):
 
     @retrying.retry(
       backoff_base=3, backoff_multiplier=0.1, backoff_threshold=2,
-      max_retries=4)
+      max_retries=4, randomize_backoff=True)
     def do_work():
       raise ValueError(u"Error \u26a0!")
 
@@ -46,17 +50,17 @@ class TestRetry(unittest.TestCase):
 
     # Check backoff sleep calls (0.1 * (3 ** attempt) * random_value).
     sleep_args = [args[0] for args, kwargs in sleep_mock.call_args_list]
-    self.assertAlmostEqual(sleep_args[0], 0.33, 2)
-    self.assertAlmostEqual(sleep_args[1], 0.99, 2)
-    self.assertAlmostEqual(sleep_args[2], 2.2, 2)
-    self.assertAlmostEqual(sleep_args[3], 2.2, 2)
+    self.assertAlmostEqual(sleep_args[0], 0.11, 2)
+    self.assertAlmostEqual(sleep_args[1], 0.36, 2)
+    self.assertAlmostEqual(sleep_args[2], 1.20, 2)
+    self.assertAlmostEqual(sleep_args[3], 2.20, 2)
 
     # Verify logged warnings.
     expected_warnings = [
-      "Retry #1 in 0.3s",
-      "Retry #2 in 1.0s",
-      "Retry #3 in 2.2s",
-      "Retry #4 in 2.2s",
+      "Retry #1 in 0.11s",
+      "Retry #2 in 0.36s",
+      "Retry #3 in 1.20s",
+      "Retry #4 in 2.20s",
     ]
     self.assertEqual(len(expected_warnings), len(warning_mock.call_args_list))
     expected_messages = iter(expected_warnings)
@@ -104,8 +108,10 @@ class TestRetry(unittest.TestCase):
     self.assertEqual(len(sleep_args), 2)
     self.assertEqual(len(warning_mock.call_args_list), 2)
     # Verify errors
-    self.assertEqual(err_mock.call_args_list,
-                     [call("Giving up retrying after 3 attempts during 60.0s")])
+    self.assertEqual(
+      err_mock.call_args_list,
+      [call("Giving up retrying after 3 attempts during 60.00s")]
+    )
 
   @patch.object(retrying.time, 'sleep')
   def test_exception_filter(self, sleep_mock):
@@ -129,3 +135,130 @@ class TestRetry(unittest.TestCase):
       self.fail("Exception was expected")
     except TypeError:
       pass
+
+
+class TestBackoff(unittest.TestCase):
+
+  def test_default_config(self):
+    seq = retrying.BackoffSequence()
+    self.assertEqual(
+      [backoff for backoff in seq],
+      [0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6, 51.2, 102.4, 204.8]
+    )
+
+  def test_max_retries(self):
+    seq = retrying.BackoffSequence(base=2, multiplier=0.1, max_retries=5)
+    self.assertEqual(
+      [backoff for backoff in seq],
+      [0.1, 0.2, 0.4, 0.8, 1.6, 3.2]
+    )
+
+  @patch.object(retrying.time, 'time')
+  def test_timeout(self, time_mock):
+    time_mock.side_effect = [100, 105, 120, 131, 139, 142, 147, 158, 162]
+    seq = retrying.BackoffSequence(
+      base=2, multiplier=0.1, max_retries=1000, timeout=60
+    )
+    self.assertEqual(
+      [backoff for backoff in seq],
+      [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4]
+    )
+
+  @patch.object(retrying.random, 'random')
+  def test_randomize(self, random_mock):
+    random_mock.side_effect = [0.5, 1, 0.5, 0, 0.5, 1, 0.5, 0]
+    randomized_seq = retrying.BackoffSequence(
+      base=2, multiplier=0.1, max_retries=7, timeout=None, randomize=True
+    )
+    seq = retrying.BackoffSequence(
+      base=2, multiplier=0.1, max_retries=7, timeout=None
+    )
+    self.assertEqual(
+      [round(backoff, 2) for backoff in randomized_seq],
+      [0.1, 0.23, 0.46, 0.78, 1.56, 3.60, 7.19, 12.23]
+    )
+    self.assertEqual(
+      [backoff for backoff in seq],
+      [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8]
+    )
+
+  def test_usecase_forelse_succeded(self):
+    work_results = ["ok", "failed", "failed", "failed"]
+    pauses = []
+
+    #-------------------------------------
+    # USECASE: for-else
+    backoff_sequence = retrying.BackoffSequence()
+    for backoff in backoff_sequence:
+      result = work_results.pop()
+      if result == 'ok':
+        break
+      pauses.append(backoff)
+    else:
+      self.fail('Retries did not help :(')
+    #-------------------------------------
+
+    self.assertEqual(pauses, [0.2, 0.4, 0.8])
+    self.assertEqual(backoff_sequence.attempt_number, 4)
+
+  def test_usecase_forelse_failed(self):
+    pauses = []
+
+    #---------------------------------
+    # USECASE: for-else
+    backoff_sequence = retrying.BackoffSequence(max_retries=5)
+    for backoff in backoff_sequence:
+      result = 'failed'   # fail consistently
+      if result == 'ok':
+        self.fail('Impossible')
+      pauses.append(backoff)
+    else:
+      logging.info('Just as expected')
+    #---------------------------------
+
+    self.assertEqual(pauses, [0.2, 0.4, 0.8, 1.6, 3.2, 6.4])
+    self.assertEqual(backoff_sequence.attempt_number, 6)
+
+  def test_usecase_hasnext_succeded(self):
+    work_results = ["ok", "failed", "failed", "failed"]
+    pauses = []
+
+    #-------------------------------------
+    # USECASE: has_next()
+    backoff_sequence = retrying.BackoffSequence()
+    for backoff in backoff_sequence:
+      result = work_results.pop()
+      if result == 'ok':
+        break
+      if not backoff_sequence.has_next():
+        self.fail('Run out of retries')
+      pauses.append(backoff)
+    #-------------------------------------
+
+    self.assertEqual(pauses, [0.2, 0.4, 0.8])
+    self.assertEqual(backoff_sequence.attempt_number, 4)
+
+  def test_usecase_hasnext_failed(self):
+    pauses = []
+
+    #-------------------------------------
+    # USECASE: has_next()
+    backoff_sequence = retrying.BackoffSequence(max_retries=5)
+    for backoff in backoff_sequence:
+      result = 'failed'   # fail consistently
+      if result == 'ok':
+        self.fail('Impossible')
+      if not backoff_sequence.has_next():
+        # Exit here!
+        break
+      pauses.append(backoff)
+    else:
+      self.fail('We had to exit at "Exit here!" line')
+    #-------------------------------------
+
+    self.assertEqual(pauses, [0.2, 0.4, 0.8, 1.6, 3.2])
+    self.assertEqual(backoff_sequence.attempt_number, 6)
+
+
+if __name__ == "__main__":
+    unittest.main()
