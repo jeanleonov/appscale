@@ -1,8 +1,6 @@
 import unittest
-
 import logging
 
-import time
 from mock import patch, call
 
 from appscale.common import retrying
@@ -211,6 +209,7 @@ class TestBackoff(unittest.TestCase):
       result = 'failed'   # fail consistently
       if result == 'ok':
         self.fail('Impossible')
+        break
       pauses.append(backoff)
     else:
       logging.info('Just as expected')

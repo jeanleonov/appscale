@@ -34,10 +34,20 @@ def not_missed(value_1, value_2):
 class BackoffSequence(object):
   """
   Iterable sequence of backoff delays.
-  This class suppose to be in cases when you need to do retries.
-  
+  This class can be used when you need to retry operations.
+    
+  With default parameters:
+    | base = 2
+    | multiplier = 0.2
+    | threshold = 300
+    | max_retries = 10
+    | timeout = 60
+    | randomize = False
+  sequence would correspond to a list:
+    [0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6, 51.2, 102.4, 204.8]
+
   Usage examples (find more in common/test/unit/test_retrying.py):
-  
+
   1.  sequence = retrying.BackoffSequence(timeout=10)
       for backoff in sequence:
         result = do_work()
@@ -46,7 +56,7 @@ class BackoffSequence(object):
         time.sleep(backoff)
       else:
         raise Exception('Retries did not help')
-  
+
   2.  sequence = retrying.BackoffSequence(max_retries=3)
       for backoff in sequence:
         result = do_work()
@@ -55,7 +65,7 @@ class BackoffSequence(object):
         if not sequence.has_more():
           raise Exception('No more retries...')
         time.sleep(backoff)
-  
+
   3.  sequence = retrying.BackoffSequence(threshold=2, multiplier=0.02)
       for backoff in sequence:
         try:
@@ -72,6 +82,21 @@ class BackoffSequence(object):
                max_retries=DEFAULT_MAX_RETRIES,
                timeout=DEFAULT_RETRYING_TIMEOUT,
                randomize=DEFAULT_RANDOMIZE):
+    """
+    Initialises iterable object which provides exponentially growing
+    numbers limited by threshold and optionally shifted by random numbers.
+    Size of sequence can be configured by max_retries and timeout.
+    
+    Args:
+      base: a number to use in backoff calculation (default=2).
+      multiplier: a number indicating initial backoff (default=0.2).
+      threshold: a number indicating maximum backoff (default=300).
+      max_retries: an integer indicating max number of elements
+        in a sequence (default=10).
+      timeout: a number of seconds sequence will provide 
+        next element after it is started (default=60).
+      randomize: a flag telling decorator to randomize backoff (default=False).
+    """
     self._base = base
     self._backoff = multiplier
     self._threshold = threshold
@@ -96,7 +121,7 @@ class BackoffSequence(object):
 
   def _has_next(self, after_backoff):
     """ Private method for verifying if retries or timeout is exceeded.
-    
+
     Args:
       after_backoff: a flag showing if timeout should be verified as for
         current moment or as if it was called after latest backoff.
@@ -117,7 +142,7 @@ class BackoffSequence(object):
     """ Verifies if sequence has more elements.
     If it returns True, it's guarantied that next call of next() won't
     raise StopIteration()
-    
+
     Returns:
       a boolean showing if sequence has more elements.
     """
@@ -128,7 +153,7 @@ class BackoffSequence(object):
 
   def next(self):
     """ Computes next backoff.
-     
+
     Returns:
       a float number representing backoff delay.
     Raises:
