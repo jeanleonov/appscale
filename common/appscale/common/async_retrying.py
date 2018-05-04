@@ -180,8 +180,6 @@ class _PersistentWatch(object):
               result = yield result
             break
 
-          except gen.Return:
-            raise
           except Exception as e:
             # Check if max retries or timeout is exceeded
             if not backoff_sequence.has_next():

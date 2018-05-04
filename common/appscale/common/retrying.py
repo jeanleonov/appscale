@@ -35,7 +35,7 @@ class BackoffSequence(object):
   """
   Iterable sequence of backoff delays.
   This class can be used when you need to retry operations.
-    
+
   With default parameters:
     | base = 2
     | multiplier = 0.2
@@ -86,14 +86,14 @@ class BackoffSequence(object):
     Initialises iterable object which provides exponentially growing
     numbers limited by threshold and optionally shifted by random numbers.
     Size of sequence can be configured by max_retries and timeout.
-    
+
     Args:
       base: a number to use in backoff calculation (default=2).
       multiplier: a number indicating initial backoff (default=0.2).
       threshold: a number indicating maximum backoff (default=300).
       max_retries: an integer indicating max number of elements
         in a sequence (default=10).
-      timeout: a number of seconds sequence will provide 
+      timeout: a number of seconds sequence will provide
         next element after it is started (default=60).
       randomize: a flag telling decorator to randomize backoff (default=False).
     """
