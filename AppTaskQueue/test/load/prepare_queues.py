@@ -40,7 +40,7 @@ if __name__ == '__main__':
                f'{PROJECT_QUEUES_CONFIG_BYTES}')
   zk_client.ensure_path(PROJECT_QUEUES_NODE)
   zk_client.set(PROJECT_QUEUES_NODE, PROJECT_QUEUES_CONFIG_BYTES)
-  time.sleep(1)
+  time.sleep(15)
 
   # Make sure queues are empty
   taskqueue = api_helper.TaskQueue([args.taskqueue_location], TEST_PROJECT)

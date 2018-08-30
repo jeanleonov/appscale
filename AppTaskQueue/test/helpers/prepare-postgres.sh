@@ -120,6 +120,35 @@ then
 else
     echo "listen_addresses = 'localhost,${HOST}'" >> "${PG_CONF}"
 fi
+cat >> "${PG_CONF}" << PERFORMANCE_CONFIGS
+
+# DB Version: 10
+# OS Type: linux
+# DB Type: web
+# Total Memory (RAM): 16 GB
+# CPUs num: 8
+# Connections num: 300
+# Data Storage: hdd
+#max_connections = 500
+#shared_buffers = 3GB
+effective_cache_size = 10GB
+maintenance_work_mem = 1GB
+checkpoint_completion_target = 0.7
+wal_buffers = 16MB
+default_statistics_target = 100
+random_page_cost = 4
+effective_io_concurrency = 2
+work_mem = 3495kB
+min_wal_size = 1GB
+max_wal_size = 2GB
+max_worker_processes = 8
+max_parallel_workers_per_gather = 4
+max_parallel_workers = 8
+PERFORMANCE_CONFIGS
+
+sed -i "s/^max_connections *=.*/max_connections = 500/" "${PG_CONF}"
+sed -i "s/^shared_buffers *=.*/shared_buffers = 3GB/" "${PG_CONF}"
+
 
 # Allow host connections to the specified DB
 if grep -q -E "^host[ \t]+${DBNAME}[ \t]+${USERNAME}[ \t]+" "${PG_HBA}"
