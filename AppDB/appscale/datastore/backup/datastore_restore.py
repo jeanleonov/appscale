@@ -5,6 +5,7 @@ import multiprocessing
 import random
 import time
 
+from appscale.common.retrying import retry
 from appscale.datastore import appscale_datastore_batch
 from appscale.datastore.backup.datastore_backup import DatastoreBackup
 from appscale.datastore.datastore_distributed import DatastoreDistributed
@@ -100,13 +101,12 @@ class DatastoreRestore(multiprocessing.Process):
     """
     return self.zoo_keeper.get_lock_with_path(zk.DS_RESTORE_LOCK_PATH)
 
+  @retry(max_retries=None, retrying_timeout=None)
   def store_entity_batch(self, entity_batch):
     """ Stores the given entity batch.
 
     Args:
       entity_batch: A list of entities to store.
-    Returns:
-      True on success, False otherwise.
     """
     logger.debug("Entity batch to process: {0}".format(entity_batch))
 
@@ -131,22 +131,8 @@ class DatastoreRestore(multiprocessing.Process):
       new_entity.MergeFromString(entity)
     logger.debug("Put request: {0}".format(put_request))
 
-    try:
-      self.dynamic_put_sync(self.app_id, put_request, put_response)
-      self.entities_restored += len(ent_protos)
-    except zk.ZKInternalException, zkie:
-      logger.error("ZK internal exception for app id {0}, " \
-        "info {1}".format(self.app_id, str(zkie)))
-      return False
-    except zk.ZKTransactionException, zkte:
-      logger.error("Concurrent transaction exception for app id {0}, " \
-        "info {1}".format(self.app_id, str(zkte)))
-      return False
-    except InternalError:
-      logger.exception('Unable to write entity')
-      return False
-
-    return True
+    self.dynamic_put_sync(self.app_id, put_request, put_response)
+    self.entities_restored += len(ent_protos)
 
   def read_from_file_and_restore(self, backup_file):
     """ Reads entities from backup file and stores them in the datastore.
