@@ -3258,6 +3258,12 @@ class Djinn
       threads << Thread.new { stop_search_role }
     end
 
+    if my_node.is_search2?
+      threads << Thread.new { start_search2_role }
+    else
+      threads << Thread.new { stop_search2_role }
+    end
+
     if my_node.is_taskqueue_master?
       threads << Thread.new { start_taskqueue_master }
     elsif my_node.is_taskqueue_slave?
@@ -3339,12 +3345,36 @@ class Djinn
     Search.stop
   end
 
+  def start_search2_role
+    Djinn.log_info('Starting appscale-search2 (Solr and python service).')
+    Djinn.log_debug('Ensuring Solr is configured and started.')
+    Djinn.log_run("#{APPSCALE_HOME}/SearchService2/solr-management/ensure_solr_running.sh")
+
+    Djinn.log_debug('Starting appscale-search2 on this node.')
+    start_cmd = '/opt/appscale_search2_server/bin/appscale-search2 --port 53423'
+    start_cmd << ' --verbose' if @options['verbose'].downcase == "true"
+    MonitInterface.start(:search2, start_cmd)
+    HelperFunctions.sleep_until_port_is_open('localhost', 53423)
+    Djinn.log_debug('Done starting appscale-search2 on this node.')
+  end
+
+  def stop_search2_role
+    # Stop appscale-search2
+    Djinn.log_debug('Stopping appscale-search2 on this node.')
+    MonitInterface.stop(:search2) if MonitInterface.is_running?(:search2)
+    Djinn.log_debug('Done stopping appscale-search2 on this node.')
+    # Stop Solr
+    Djinn.log_debug('Stopping SOLR on this node.')
+    Djinn.log_run('service solr stop')
+    Djinn.log_run('service solr disable')
+    Djinn.log_debug('Done stopping SOLR.')
+  end
+
   def start_taskqueue_master
     verbose = @options['verbose'].downcase == "true"
     TaskQueue.start_master(false, verbose)
     return true
   end
-
 
   def stop_taskqueue
     TaskQueue.stop
@@ -3836,6 +3866,7 @@ class Djinn
       LogService
       scripts
       SearchService
+      SearchService2
       XMPPReceiver
     ).map { |path| File.join(APPSCALE_HOME, path) }
     to_copy.each { |dir|
@@ -3866,6 +3897,7 @@ class Djinn
     master_ips = []
     memcache_ips = []
     search_ips = []
+    search2_ips = []
     slave_ips = []
     taskqueue_ips = []
     my_public = my_node.public_ip
@@ -3881,6 +3913,7 @@ class Djinn
         master_ips << node.private_ip if node.is_db_master?
         memcache_ips << node.private_ip if node.is_memcache?
         search_ips << node.private_ip if node.is_search?
+        search2_ips << node.private_ip if node.is_search2?
         slave_ips << node.private_ip if node.is_db_slave?
         taskqueue_ips << node.private_ip if node.is_taskqueue_master? ||
           node.is_taskqueue_slave?
@@ -3896,11 +3929,13 @@ class Djinn
     login_content = login_ip + "\n"
     master_content = master_ips.join("\n") + "\n"
     search_content = search_ips.join("\n") + "\n"
+    search2_content = search2_ips.join("\n") + "\n"
     slaves_content = slave_ips.join("\n") + "\n"
 
     new_content = all_ips_content + login_content + load_balancer_content +
       master_content + memcache_content + my_public + my_private +
-      num_of_nodes + taskqueue_content + search_content + slaves_content
+      num_of_nodes + taskqueue_content + search_content + search2_content +
+      slaves_content
 
     # If nothing changed since last time we wrote locations file(s), skip it.
     if new_content != @locations_content
@@ -3956,6 +3991,12 @@ class Djinn
       unless search_content.chomp.empty?
         HelperFunctions.write_file(Search::SEARCH_LOCATION_FILE,
                                    search_content)
+      end
+
+      Djinn.log_info("Search2 service locations: #{search2_ips}.")
+      unless search2_content.chomp.empty?
+        HelperFunctions.write_file('/etc/appscale/search_ip',
+                                   search2_content)
       end
     end
   end

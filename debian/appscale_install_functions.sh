@@ -343,6 +343,11 @@ installsolr()
     mv -v ${SOLR_DIR}/solr-${SOLR_VER} ${SOLR_DIR}/solr
 }
 
+installsolr7()
+{
+    "${APPSCALE_HOME}/SearchService2/solr-management/ensure_solr_installed.sh"
+}
+
 installcassandra()
 {
     CASSANDRA_VER=3.11.2
@@ -653,6 +658,17 @@ installapiserver()
      pip install ${APPSCALE_HOME}/AppControllerClient ${APPSCALE_HOME}/common \
      ${APPSCALE_HOME}/APIServer)
     eval ${unset_opt}
+}
+
+installsearch2()
+{
+    # Create virtual environment based on Python 3
+    rm -rf /opt/appscale_search2_server
+    python3 -m venv /opt/appscale_search2_server/
+
+    # Let the script compile protocols and parser and install package using pip.
+    "${APPSCALE_HOME}/SearchService2/build-scripts/ensure_searchservice2.sh" \
+        /opt/appscale_search2_server/bin/pip
 }
 
 prepdashboard()

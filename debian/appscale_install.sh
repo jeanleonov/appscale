@@ -49,6 +49,7 @@ case "$1" in
         postinstallcassandra
         postinstallrabbitmq
         installsolr
+        installsolr7
         installservice
         postinstallservice
         postinstallmonit
@@ -67,6 +68,7 @@ case "$1" in
         installtaskqueue
         installdatastore
         installapiserver
+        installsearch2
         preplogserver
         prepdashboard
         fetchclientjars
