@@ -17,6 +17,7 @@
 """ AppScale Search API stub."""
 
 import logging
+import random
 
 from google.appengine.api import apiproxy_stub
 from google.appengine.api.search import search
@@ -58,8 +59,12 @@ class SearchServiceStub(apiproxy_stub.APIProxyStub):
     super(SearchServiceStub, self).__init__(service_name)
 
     try:
+      all_ips = []
       with open(_SEARCH_LOCATION_FILE) as location_file:
-        search_ip = location_file.read().strip() or None
+        for location in location_file:
+          if location.strip():
+            all_ips.append(location.strip())
+      search_ip = all_ips[0] if all_ips else None
     except IOError:
       search_ip = None
 
@@ -89,6 +94,8 @@ class SearchServiceStub(apiproxy_stub.APIProxyStub):
       request: A search_service_pb.DeleteDocumentRequest.
       response: A search_service_pb.DeleteDocumentResponse.
     """
+    if not request.has_app_id():
+      request.set_app_id(self.__app_id)
     self._RemoteSend(request, response, "DeleteDocument")
 
   def _Dynamic_ListIndexes(self, request, response):
@@ -101,6 +108,8 @@ class SearchServiceStub(apiproxy_stub.APIProxyStub):
     Raises:
       ResponseTooLargeError: raised for testing admin console.
     """
+    if not request.has_app_id():
+      request.set_app_id(self.__app_id)
     self._RemoteSend(request, response, "ListIndexes")
 
   def _Dynamic_ListDocuments(self, request, response):
@@ -110,6 +119,8 @@ class SearchServiceStub(apiproxy_stub.APIProxyStub):
       request: A search_service_pb.ListDocumentsRequest.
       response: A search_service_pb.ListDocumentsResponse.
     """
+    if not request.has_app_id():
+      request.set_app_id(self.__app_id)
     self._RemoteSend(request, response, "ListDocuments")
  
   def _Dynamic_Search(self, request, response):
