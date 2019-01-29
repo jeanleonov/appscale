@@ -17,11 +17,9 @@
 """ AppScale Search API stub."""
 
 import logging
-import random
 
 from google.appengine.api import apiproxy_stub
 from google.appengine.api.search import search
-from google.appengine.api.search import search_service_pb
 from google.appengine.api.search import search_util
 from google.appengine.ext.remote_api import remote_api_pb                       
 from google.appengine.runtime import apiproxy_errors
@@ -34,6 +32,7 @@ KEY_LOCATION = "/etc/appscale/certs/mykey.pem"
 
 # The location on the system that has the IP of the search server.
 _SEARCH_LOCATION_FILE = "/etc/appscale/search_ip"
+_SEARCH2_LOCATIONS_FILE = "/etc/appscale/search2_ips"
 
 # The port that the search server is running on.  
 _SEARCH_PORT = 53423
@@ -57,20 +56,30 @@ class SearchServiceStub(apiproxy_stub.APIProxyStub):
       app_id: The application identifier. 
     """
     super(SearchServiceStub, self).__init__(service_name)
+    self.__search_location = None
 
     try:
-      all_ips = []
-      with open(_SEARCH_LOCATION_FILE) as location_file:
-        for location in location_file:
+      # Trying appscale-search2 first
+      search2_ips = []
+      with open(_SEARCH2_LOCATIONS_FILE) as locations_file:
+        for location in locations_file:
           if location.strip():
-            all_ips.append(location.strip())
-      search_ip = all_ips[0] if all_ips else None
-    except IOError:
-      search_ip = None
-
-    if search_ip is not None:
-      self.__search_location = '{}:{}'.format(search_ip, _SEARCH_PORT)
-      logging.info('Search server set to {}'.format(search_ip))
+            search2_ips.append(location.strip())
+      self.__search_location = '{}:{}'.format(search2_ips[0], _SEARCH_PORT)
+      logging.info('Using SearchService2 at {}'.format(self.__search_location))
+    except (IOError, IndexError):
+      try:
+        # Trying old search service alternatively
+        search_ips = []
+        with open(_SEARCH_LOCATION_FILE) as locations_file:
+          for location in locations_file:
+            if location.strip():
+              search_ips.append(location.strip())
+        self.__search_location = '{}:{}'.format(search_ips[0], _SEARCH_PORT)
+        logging.info('Using SearchService at {}'.format(self.__search_location))
+      except IOError:
+        logging.warn('Neither old SearchService nor SearchService2 are '
+                     'configured in the deployment. Search API won\'t work.')
 
     self.__app_id = app_id
  

@@ -11,7 +11,7 @@ A server that handles Search API requests from GAE application.
    `SearchService2/build-scripts/ensure_searchservice2.sh <your-venv>/bin/pip`
 
 3. Ensure Zookeeper cluster is started and its locations are saved to
-  `/etc/appscale/zookeeper_location`.
+  `/etc/appscale/zookeeper_locations`.
    
 4. Ensure SolrCloud cluster is started, connected to Zookeeper and
    `appscale-search-api-config` config-set is created in SolrCloud:

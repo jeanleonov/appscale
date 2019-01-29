@@ -3698,6 +3698,19 @@ class Djinn
     Djinn.log_info('Finished building APIServer.')
   end
 
+  def build_search_service2
+    Djinn.log_info('Building uncommitted SearchService2 changes')
+    upgrade_search = \
+      "#{APPSCALE_HOME}/SearchService2/build-scripts/ensure_searchservice2.sh" \
+      " /opt/appscale_search2_server/bin/pip"
+    unless system("bash -c '#{upgrade_search}'")
+      Djinn.log_error(
+        'Unable to build SearchService2 (install SearchSearvice2 failed).')
+      return
+    end
+    Djinn.log_info('Finished building SearchService2.')
+  end
+
   # Run a build on modified directories so that changes will take effect.
   def build_uncommitted_changes
     status = `git -C #{APPSCALE_HOME} status`
@@ -3709,6 +3722,7 @@ class Djinn
     build_java_appserver if status.include?('AppServer_Java')
     build_hermes if status.include?('Hermes')
     build_api_server if status.include?('APIServer')
+    build_search_service2 if status.include?('SearchService2')
   end
 
   def configure_ejabberd_cert
@@ -3995,7 +4009,7 @@ class Djinn
 
       Djinn.log_info("Search2 service locations: #{search2_ips}.")
       unless search2_content.chomp.empty?
-        HelperFunctions.write_file('/etc/appscale/search_ip',
+        HelperFunctions.write_file('/etc/appscale/search2_ips',
                                    search2_content)
       end
     end

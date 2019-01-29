@@ -163,17 +163,14 @@ def main():
   parser.add_argument(
     '-p', '--port', type=int, help='The port to listen on')
   parser.add_argument(
-    '-z', '--zk-location', default=None,
-    help='Comma-separated list of ZooKeeper locations')
+    '-z', '--zk-locations', default=[], nargs='+',
+    help='ZooKeeper location(s)')
   args = parser.parse_args()
 
   if args.verbose:
     logging.getLogger('appscale').setLevel(logging.DEBUG)
 
-  if args.zk_location is not None:
-    zk_locations = args.zk_location.split(',')
-  else:
-    zk_locations = appscale_info.get_zk_node_ips()
+  zk_locations = args.zk_locations or appscale_info.get_zk_node_ips()
   zk_client = KazooClient(
     hosts=','.join(zk_locations),
     connection_retry=ZK_PERSISTENT_RECONNECTS

@@ -7,8 +7,13 @@ SOLR_EXTRACT_DIR=/opt/
 SOLR_VAR_DIR=/var/solr/
 SOLR_MANAGEMENT_DIR="$( realpath --strip "$( dirname "${BASH_SOURCE[0]}" )" )"
 
-# Ensure Solr is installed
-VERSION=7.6.0 "${SOLR_MANAGEMENT_DIR}/ensure_solr_installed.sh"
+# Check if Solr is installed
+VERSION=7.6.0
+if ! ${SOLR_EXTRACT_DIR}/solr/bin/solr -version | grep "${VERSION}"
+then
+    echo "Can not start Solr ${VERSION} as it's not installed."
+    exit 1
+fi
 
 # Root path for all SolrCloud nodes in Zookeeper.
 SOLR_ZK_ROOT=/solr

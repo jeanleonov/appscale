@@ -27,7 +27,7 @@ import logging
 import antlr4
 import attr
 
-from appscale.search.constants import InternalError
+from appscale.search.constants import InvalidRequest
 from appscale.search.query_parser.queryLexer import queryLexer
 from appscale.search.query_parser.queryParser import queryParser
 
@@ -175,7 +175,7 @@ def parse_query(query_str):
       msg = 'Searching on GeoPoint fields is not supported yet.'
     else:
       msg = 'Failed to parse query string: "{}"'.format(query_str)
-    raise InternalError(msg)
+    raise InvalidRequest(msg)
   exprs_seq_node = raw_query_node.children[0]
   return _process_exprs_seq(exprs_seq_node)
 

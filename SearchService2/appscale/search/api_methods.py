@@ -16,8 +16,9 @@ from tornado import gen
 
 from appscale.search import solr_adapter
 from appscale.search.constants import (
-  SearchServiceError, UnknownFieldTypeException,
-  UnknownFacetTypeException)
+  InvalidRequest, UnknownFieldTypeException,
+  UnknownFacetTypeException
+)
 from appscale.search.models import Field, Document, Facet
 from appscale.search.protocols import search_pb2
 
@@ -102,10 +103,8 @@ class APIMethods(object):
       list_indexes_request: A search_pb2.ListIndexesRequest.
       list_indexes_response: A search_pb2.ListIndexesResponse.
     """
-    raise SearchServiceError(
-      search_pb2.SearchServiceError.INTERNAL_ERROR,
-      "List indexes method is not implemented in AppScale SearchService2 yet"
-    )
+    raise InvalidRequest("List indexes method is not implemented "
+                         "in AppScale SearchService2 yet")
 
   @gen.coroutine
   def list_documents(self, list_documents_request, list_documents_response):
