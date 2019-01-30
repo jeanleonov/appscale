@@ -20,11 +20,12 @@ SOLR_ZK_ROOT=/solr
 
 # Determine zookeeper hosts
 FIRST_ZK=$(head -1 /etc/appscale/zookeeper_locations)
-ZK_HOST="${FIRST_ZK}:${SOLR_ZK_ROOT}"
+ZK_HOST="${FIRST_ZK}"
 for host in $(tail -n +2 /etc/appscale/zookeeper_locations)
 do
-    ZK_HOST="${ZK_HOST},${host}:${SOLR_ZK_ROOT}"
+    ZK_HOST="${ZK_HOST},${host}"
 done
+ZK_HOST="${ZK_HOST}${SOLR_ZK_ROOT}"
 PRIVATE_IP=$(cat /etc/appscale/my_private_ip)
 
 
@@ -39,7 +40,7 @@ fi
 # Generating proper solr.in.sh with needed SolrCloud configurations.
 export ZK_HOST
 export PRIVATE_IP
-export SOLR_MEM="${SOLR_MEM:-512m}"
+export SOLR_MEM="${SOLR_MEM:-256m}"
 envsubst < "${SOLR_MANAGEMENT_DIR}/solr.in.sh" > "/tmp/solr.in.sh"
 if cmp -s "/tmp/solr.in.sh" "/etc/default/solr.in.sh"
 then
