@@ -165,8 +165,8 @@ def parse_query(query_str):
   Returns:
     An Expression or ExpressionsGroup corresponding to query_str.
   """
-  input = antlr4.InputStream(query_str)
-  lexer = queryLexer(input)
+  input_stream = antlr4.InputStream(query_str)
+  lexer = queryLexer(input_stream)
   stream = antlr4.CommonTokenStream(lexer)
   parser = queryParser(stream)
   raw_query_node = parser.query()    # MATCHED: exprs_seq EOF

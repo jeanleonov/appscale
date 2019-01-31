@@ -18,7 +18,7 @@ SOLR_INSTALL_DIR=${SOLR_INSTALL_DIR:-/opt/solr}
 SOLR_ZK_ROOT=/solr
 
 # Zookeeper location
-ZK_LOCATION=${ZK_LOCATION:-$(cat /etc/appscale/zookeeper_locations | head -1)}
+ZK_LOCATION=${ZK_LOCATION:-$(head -1 /etc/appscale/zookeeper_locations)}
 
 SOLR_BIN="${SOLR_INSTALL_DIR}/bin/solr"
 CONFIG_PATH=${SOLR_ZK_ROOT}/configs/${CONFIG_SET_NAME}

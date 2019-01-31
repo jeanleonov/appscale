@@ -203,7 +203,8 @@ class SolrAPI(object):
           'maxShardsPerNode': 1,     #
         }
       )
-      logger.info('Successfully created collection {} ()'.format(collection, response.body))
+      logger.info('Successfully created collection {} ({})'
+                  .format(collection, response.body))
       self._collections_cache = yield self.list_collections()
     except SolrError as err:
       if 'collection already exists' in err.error_detail:

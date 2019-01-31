@@ -4,7 +4,6 @@ set -e
 set -u
 
 SOLR_EXTRACT_DIR=/opt/
-SOLR_VAR_DIR=/var/solr/
 SOLR_MANAGEMENT_DIR="$( realpath --strip "$( dirname "${BASH_SOURCE[0]}" )" )"
 
 # Check if Solr is installed

@@ -7,8 +7,6 @@ VERSION=7.6.0
 
 SOLR_EXTRACT_DIR=/opt/
 SOLR_VAR_DIR=/var/solr/
-SOLR_MANAGEMENT_DIR="$( realpath --strip "$( dirname "${BASH_SOURCE[0]}" )" )"
-
 
 if ${SOLR_EXTRACT_DIR}/solr/bin/solr -version | grep "${VERSION}"
 then
