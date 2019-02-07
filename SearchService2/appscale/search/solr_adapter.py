@@ -133,12 +133,6 @@ class SolrAdapter(object):
     Returns (asynchronously):
       An instance of models.SearchResult.
     """
-    if not query:
-      # Nothing should match empty query.
-      empty_result = SearchResult(num_found=0, scored_documents=[],
-                                  cursor=None, facets=None)
-      raise gen.Return(empty_result)
-
     # TODO: Cache schema info or store it in watched zookeeper node.
     index_schema = yield self._get_schema_info(app_id, namespace, index_name)
     # Convert Search API query to Solr query with a list of fields to search.
@@ -146,15 +140,19 @@ class SolrAdapter(object):
       query, index_schema.fields, index_schema.grouped_fields
     )
 
+    # Process projection_fields
     if projection_fields:
-      solr_projection_fields = ['id']
+      solr_projection_fields = ['id', 'rank', 'language']
       for gae_name in projection_fields:
         # (1) In GAE fields with different type can have the same name,
         # in Solr they are stored as fields with different name (type suffix).
-        solr_projection_fields += index_schema.grouped_fields[gae_name]
+        solr_projection_fields += [
+          solr_field.solr_name for solr_field in
+          index_schema.grouped_fields[gae_name]
+        ]
     elif keys_only:
       # Skip everything but ID.
-      solr_projection_fields = ['id']
+      solr_projection_fields = ['id', 'rank', 'language']
     else:
       # Return all fields.
       solr_projection_fields = None

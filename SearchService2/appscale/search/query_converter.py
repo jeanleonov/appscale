@@ -66,6 +66,12 @@ class _QueryConverter(object):
     Returns:
       An instance of SolrQueryOptions to use in Solr request.
     """
+    if not self.gae_query:
+      return SolrQueryOptions(
+        query_string='*:*',
+        query_fields=[],
+        def_type='edismax'
+      )
     # Build syntax tree
     expr_or_exprs_group = parser.parse_query(self.gae_query)
 
