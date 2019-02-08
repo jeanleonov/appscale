@@ -139,6 +139,7 @@
     <dynamicField name="*_atom_facet_value" type="atoms" indexed="false" stored="true"/>
     <dynamicField name="*_atom_facet" type="atom_facets" indexed="true" stored="true"/>
     <dynamicField name="*_number" type="numbers" indexed="true" stored="true"/>
+    <dynamicField name="*_number_facet" type="numbers" indexed="true" stored="true"/>
     <dynamicField name="*_date" type="dateranges"  indexed="true"  stored="true"/>
     <dynamicField name="*_geo" type="locations"  indexed="true"  stored="true"/>
     <dynamicField name="*_txt" type="text_general"  indexed="true"  stored="true"/>

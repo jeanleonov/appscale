@@ -8,8 +8,6 @@ import json
 import logging
 import socket
 
-from appscale.search.models import SolrSearchResult
-
 from urllib.parse import urlencode
 
 from tornado import httpclient, gen, ioloop
@@ -19,6 +17,7 @@ from appscale.search.constants import (
   SolrIsNotReachable, SOLR_TIMEOUT, SolrClientError, SolrServerError,
   SolrError, SOLR_COMMIT_WITHIN, APPSCALE_CONFIG_SET_NAME
 )
+from appscale.search.models import SolrSearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -134,9 +133,10 @@ class SolrAPI(object):
       raise SolrIsNotReachable('Socket error ({})'.format(err))
     except httpclient.HTTPError as err:
       msg = u"Error during Solr call {url} ({err})".format(url=url, err=err)
-      if err.response.body.decode('utf-8'):
+      body = err.response.body.decode('utf-8')
+      if body:
         try:
-          err_details = json.loads(err.response.body.decode('utf-8'))['error']['msg']
+          err_details = json.loads(body)['error']['msg']
         except ValueError:
           err_details = err.response.body.decode('utf-8')
         msg += u"\nError details: {}".format(err_details)
@@ -249,10 +249,13 @@ class SolrAPI(object):
     """
     yield self.ensure_collection(collection)
     try:
+      if SOLR_COMMIT_WITHIN:
+        params = {'commitWithin': SOLR_COMMIT_WITHIN}
+      else:
+        params = {'commit': 'true'}
       yield self.post(
         '/v2/collections/{}/update'.format(collection),
-        params={'commitWithin': SOLR_COMMIT_WITHIN},
-        json_data=documents
+        params=params, json_data=documents
       )
       logger.info('Successfully indexed {} documents to collection {}'
                   .format(len(documents), collection))
@@ -271,12 +274,15 @@ class SolrAPI(object):
     """
     yield self.ensure_collection(collection)
     try:
+      if SOLR_COMMIT_WITHIN:
+        params = {'commitWithin': SOLR_COMMIT_WITHIN}
+      else:
+        params = {'commit': 'true'}
       # Delete operation doesn't work with API v2 yet.
       # So using old API (/solr/...).
       yield self.post(
         '/solr/{}/update'.format(collection),
-        params={'commitWithin': SOLR_COMMIT_WITHIN},
-        json_data={"delete": ids}
+        params=params, json_data={"delete": ids}
       )
       logger.info('Successfully deleted {} documents from collection {}'
                   .format(len(ids), collection))
@@ -287,8 +293,9 @@ class SolrAPI(object):
 
   @gen.coroutine
   def query_documents(self, collection, query, filter_=None, offset=None,
-                      limit=None, fields=None, sort=None, facet=None,
-                      cursor=None, def_type=None, query_fields=None):
+                      limit=None, fields=None, sort=None, facet_dict=None,
+                      cursor=None, def_type=None, query_fields=None,
+                      stats_fields=None):
     """ Queries Solr for documents matching specified query.
 
     Args:
@@ -299,10 +306,11 @@ class SolrAPI(object):
       limit: a int - max number of document to return.
       fields: a list of field names to return for each document.
       sort: a list of field names suffixed with direction to order results by.
-      facet: a dict describing facets to compute.
+      facet_dict: a dict describing facets to compute.
       cursor: a str - query cursors.
       def_type: a str - query parser type to use.
       query_fields: a list of field names to run query against.
+      stats_fields: a list of fields to retrieve stats for.
     Returns (asynchronously):
       A SolrSearchResult containing documents, facets, cursor
       and total number of documents matching the query.
@@ -318,6 +326,8 @@ class SolrAPI(object):
         ('cursorMark', cursor),
         ('defType', def_type),
         ('qf', ' '.join(query_fields) if query_fields else ''),
+        ('stats', 'true' if stats_fields else None),
+        ('stats.field', stats_fields)
       ]
       if value is not None
     }
@@ -328,14 +338,15 @@ class SolrAPI(object):
         ('offset', offset),
         ('limit', limit),
         ('fields', fields),
+        ('facet', facet_dict),
         ('sort', ','.join(sort) if sort else ''),
-        ('facet', facet),
         ('params', params)
       ]
       if value is not None
     }
 
-    logger.debug(u'QUERY_BODY: {}'.format(json.dumps(json_data)))
+    json_body = json.dumps(json_data)
+    logger.debug(u'QUERY_BODY: {}'.format(json_body))
 
     try:
       response = yield self.post(
@@ -344,11 +355,15 @@ class SolrAPI(object):
       )
       json_response = json.loads(response.body.decode('utf-8'))
       query_response = json_response['response']
+      logger.debug(u'QUERY_RESPONSE: {}'.format(response.body.decode('utf-8')))
+      stats = json_response.get('stats')
+      stats_results = stats.get('stats_fields') if stats else None
       solr_search_result = SolrSearchResult(
         num_found=query_response['numFound'],
         documents=query_response['docs'],
         cursor=json_response.get('nextCursorMark'),
-        facets=json_response.get('facets')
+        facet_results=json_response.get('facets'),
+        stats_results=stats_results
       )
       logger.info('Found {} and fetched {} documents from collection {}'
                   .format(solr_search_result.num_found,

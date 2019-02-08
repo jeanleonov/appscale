@@ -12,13 +12,13 @@ from datetime import datetime
 
 from tornado import gen
 
-from appscale.search import query_converter
+from appscale.search import query_converter, facet_converter
 from appscale.search.constants import (
-  SOLR_ZK_ROOT, SUPPORTED_LANGUAGES, UnknownFieldTypeException
-)
+  SOLR_ZK_ROOT, SUPPORTED_LANGUAGES, UnknownFieldTypeException,
+  UnknownFacetTypeException, InvalidRequest)
 from appscale.search.models import (
-  Field, ScoredDocument, SearchResult, SolrIndexSchemaInfo, SolrSchemaFieldInfo
-)
+  Field, ScoredDocument, SearchResult, SolrIndexSchemaInfo, SolrSchemaFieldInfo,
+  Facet)
 from appscale.search.solr_api import SolrAPI
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,9 @@ class SolrAdapter(object):
 
   @gen.coroutine
   def query(self, app_id, namespace, index_name, query, projection_fields,
-            sort_expressions, limit, offset, cursor, keys_only):
+            sort_expressions, limit, offset, cursor, keys_only,
+            auto_discover_facet_count, facet_requests,  facet_refinements,
+            facet_auto_detect_limit):
     """ Retrieves documents which matches query from Solr collection
     and converts it to unified documents.
 
@@ -130,6 +132,10 @@ class SolrAdapter(object):
       offset: an int specifying number of first document to skip.
       cursor: a str representing query cursor.
       keys_only: a bool indicating if only document IDs should be returned.
+      auto_discover_facet_count: TODO
+      facet_requests: TODO
+      facet_refinements: TODO
+      facet_auto_detect_limit: TODO
     Returns (asynchronously):
       An instance of models.SearchResult.
     """
@@ -146,10 +152,13 @@ class SolrAdapter(object):
       for gae_name in projection_fields:
         # (1) In GAE fields with different type can have the same name,
         # in Solr they are stored as fields with different name (type suffix).
-        solr_projection_fields += [
-          solr_field.solr_name for solr_field in
-          index_schema.grouped_fields[gae_name]
-        ]
+        try:
+          solr_projection_fields += [
+            solr_field.solr_name for solr_field in
+            index_schema.grouped_fields[gae_name]
+          ]
+        except KeyError:
+          raise InvalidRequest('Unknown field "{}"'.format(gae_name))
     elif keys_only:
       # Skip everything but ID.
       solr_projection_fields = ['id', 'rank', 'language']
@@ -157,39 +166,81 @@ class SolrAdapter(object):
       # Return all fields.
       solr_projection_fields = None
 
+    # Process sort_expressions
     solr_sort_fields = []
     if sort_expressions:
       for sort_expression, direction in sort_expressions:
-        if EXPRESSION_SIGN.search(sort_expression):
-          logger.warning('Sort expression currently supports only field names')
-          continue
-        fields_group = index_schema.grouped_fields[sort_expression]
-        if not fields_group:
-          logger.warning('SortExpression: Could not find field "{}"'
-                         .format(sort_expression))
-          continue
-        # There can be multiple fields with the same GAE name [*1],
-        # so let's pick most "popular" field of those.
-        biggest_field = max(fields_group, key=lambda v: v.docs_number)
-        solr_sort_expr = '{} {}'.format(biggest_field.solr_name, direction)
+        try:
+          fields_group = index_schema.grouped_fields[sort_expression]
+        except KeyError:
+          if EXPRESSION_SIGN.search(sort_expression):
+            msg = (
+              'Sort expression currently supports only field names, '
+              'can not sort by expression "{}"'.format(sort_expression)
+            )
+          else:
+            msg = 'Unknown field "{}"'.format(sort_expression)
+          raise InvalidRequest(msg)
+        if len(fields_group) > 1:
+          # Multiple field types are used for field with the same GAE name [*1],
+          # so let's pick most "popular" field of those.
+          field_types = ', '.join(
+            '{}: {} docs'.format(field.type, field.docs_number)
+            for field in fields_group
+          )
+          logger.warning(
+            'Multiple field types are used for field {} ({}). Sorting by {}.'
+            .format(sort_expression, field_types, fields_group[0].type)
+          )
+        solr_field = fields_group[0]
+        solr_sort_expr = '{} {}'.format(solr_field.solr_name, direction)
         solr_sort_fields.append(solr_sort_expr)
     if not solr_sort_fields:
       solr_sort_fields = ['rank desc']
 
+    # Process Facet params
+    refinement_filter = None
+    facet_items = []
+    if facet_refinements:
+      # Determine if we need to filter by refinement.
+      refinement_filter = facet_converter.generate_refinement_filter(
+        index_schema.grouped_facet_indexes, facet_refinements
+      )
+    if auto_discover_facet_count:
+      # Figure out what facets are specified for greater number of documents.
+      atom_facets_stats = yield self._get_atom_facets_stats(
+        index_schema, query_options, refinement_filter
+      )
+      # Add auto-discovered facets to the list.
+      facet_items += facet_converter.discover_facets(
+        atom_facets_stats, auto_discover_facet_count,
+        facet_auto_detect_limit
+      )
+    if facet_requests:
+      # Add explicitly specified facets to the list.
+      facet_items += facet_converter.convert_facet_requests(
+        index_schema.grouped_facet_indexes, facet_requests
+      )
+
+    # DO ACTUAL QUERY:
     solr_result = yield self.solr.query_documents(
       collection=index_schema.collection,
       query=query_options.query_string, offset=offset, limit=limit,
       cursor=cursor, fields=solr_projection_fields, sort=solr_sort_fields,
-      def_type=query_options.def_type, query_fields=query_options.query_fields
+      def_type=query_options.def_type, query_fields=query_options.query_fields,
+      facet_dict=dict(facet_items) if facet_items else None,
+      filter_=refinement_filter
     )
+
+    # Convert Solr results to unified models
     docs = [_from_solr_document(solr_doc)
             for solr_doc in solr_result.documents]
-    facets = [_from_solr_facet(solr_facet)
-              for solr_facet in solr_result.facets or []]
-
+    facet_results = facet_converter.convert_facet_results(
+      solr_result.facet_results
+    )
     result = SearchResult(
       num_found=solr_result.num_found, scored_documents=docs,
-      cursor=cursor, facets=facets
+      cursor=cursor, facet_results=facet_results
     )
     raise gen.Return(result)
 
@@ -213,13 +264,18 @@ class SolrAdapter(object):
       language=None, docs_number=fields_info.get('id', {}).get('docs', 0)
     )
     rank_field = SolrSchemaFieldInfo(
-        solr_name='rank', gae_name='rank', type=Field.Type.NUMBER,
-        language=None, docs_number=fields_info.get('rank', {}).get('docs', 0)
+      solr_name='rank', gae_name='rank', type=Field.Type.NUMBER,
+      language=None, docs_number=fields_info.get('rank', {}).get('docs', 0)
     )
     fields = [id_field, rank_field]
-    grouped_fields = collections.defaultdict(list)
-    grouped_fields['doc_id'] = [id_field]
-    grouped_fields['rank'] = [rank_field]
+    grouped_fields = {
+      'doc_id': [id_field],
+      'rank': [rank_field]
+    }
+    facets = []
+    grouped_facet_values = {}
+    grouped_facet_indexes = {}
+
     for solr_field_name, info in fields_info.items():
       try:
         gae_name, type_, language = parse_solr_field_name(solr_field_name)
@@ -229,8 +285,33 @@ class SolrAdapter(object):
         solr_name=solr_field_name, gae_name=gae_name, type=type_,
         language=language, docs_number=info.get('docs', 0)
       )
-      fields.append(schema_field)
-      grouped_fields[gae_name].append(schema_field)
+      if SolrSchemaFieldInfo.Type.is_facet_value(type_):
+        facets.append(schema_field)
+        add_value(grouped_facet_values, gae_name, schema_field)
+      if SolrSchemaFieldInfo.Type.is_facet_index(type_):
+        facets.append(schema_field)
+        add_value(grouped_facet_indexes, gae_name, schema_field)
+      if not SolrSchemaFieldInfo.Type.is_facet(type_):
+        fields.append(schema_field)
+        add_value(grouped_fields, gae_name, schema_field)
+
+    for fields_group in grouped_fields.values():
+      if len(fields_group) > 1:
+        # Sadly app uses the same name for fields with different types [*1].
+        # Let's sort them from high popularity to low.
+        fields_group.sort(key=lambda solr_field: -solr_field.docs_number)
+
+    for facets_group in grouped_facet_values.values():
+      if len(facets_group) > 1:
+        # Sadly app uses the same name for facets with different types [*1].
+        # Let's sort them from high popularity to low.
+        facets_group.sort(key=lambda solr_field: -solr_field.docs_number)
+
+    for facets_group in grouped_facet_indexes.values():
+      if len(facets_group) > 1:
+        # Sadly app uses the same name for facets with different types [*1].
+        # Let's sort them from high popularity to low.
+        facets_group.sort(key=lambda solr_field: -solr_field.docs_number)
 
     index_info = solr_schema_info['index']
     raise gen.Return(SolrIndexSchemaInfo(
@@ -242,12 +323,65 @@ class SolrAdapter(object):
       heap_usage=index_info['indexHeapUsageBytes'],
       size_in_bytes=index_info['segmentsFileSizeInBytes'],
       fields=fields,
-      grouped_fields=grouped_fields
+      facets=facets,
+      grouped_fields=grouped_fields,
+      grouped_facet_values=grouped_facet_values,
+      grouped_facet_indexes=grouped_facet_indexes
     ))
+
+  async def _get_atom_facets_stats(self, index_schema, query_options,
+                                   refinement_filter):
+    """ Retrieves statistics of fields corresponding to facets of atom type.
+    Statistics per fields contains only number of documents containing
+    that solr field from those documents which matches the query.
+
+    Args:
+      index_schema: an instance of SolrIndexSchemaInfo.
+      query_options: a instance of SolrQueryOptions.
+      refinement_filter: a str representing Solr filter.
+    Returns:
+      A list of tuples (<SolrSchemaFieldInfo>, <documents count>).
+    """
+    atom_facets = [
+      facet for facet in index_schema.facets
+      if facet.type == SolrSchemaFieldInfo.Type.ATOM_FACET_INDEX
+    ]
+    request_facet_stats = [
+      # e.g.: '{!count=true}myfacetname_atom_facet'
+      '{{!count=true}}{field_name}'.format(field_name=facet.solr_name)
+      for facet in atom_facets
+    ]
+    solr_result = await self.solr.query_documents(
+      collection=index_schema.collection, query=query_options.query_string,
+      offset=0, limit=0, fields=['id'], def_type=query_options.def_type,
+      query_fields=query_options.query_fields, filter_=refinement_filter,
+      stats_fields=request_facet_stats
+    )
+    field_stats_items = []
+    for facet in atom_facets:
+      documents_count = solr_result.stats_results[facet.solr_name]['count']
+      field_stats_items.append((facet, documents_count))
+    return field_stats_items
 
 
 def get_collection_name(app_id, namespace, gae_index_name):
   return u'appscale_{}_{}_{}'.format(app_id, namespace, gae_index_name)
+
+
+def add_value(dict_, key, value):
+  """ Helps to have functionality of defaultdict(list) using a regular dict.
+  It's needed because a regular dict raises KeyError when key is not present
+  in the dict_, which is more transparent behaviour.
+
+  Args:
+    dict_: a dict to add value to.
+    key: a key, under which value should be added to.
+    value: a value to append to a list under the key in dict_.
+  """
+  values = dict_.get(key)
+  if not values:
+    dict_[key] = values = []
+  values.append(value)
 
 
 def _to_solr_document(document):
@@ -277,9 +411,7 @@ def _to_solr_document(document):
       solr_field_name = '{}_{}{}'.format(field.name, 'txt', lang_suffix)
       solr_doc[solr_field_name].append(field.value)
     elif field.type == Field.Type.HTML:
-      # TODO implement HTML analyser
-      solr_field_name = '{}_{}{}'.format(field.name, 'txt', lang_suffix)
-      solr_doc[solr_field_name].append(field.value)
+      raise InvalidRequest('Indexing HTML fields is not supported yet')
     elif field.type == Field.Type.ATOM:
       solr_field_name = '{}_{}'.format(field.name, 'atom')
       solr_doc[solr_field_name].append(field.value)
@@ -296,13 +428,26 @@ def _to_solr_document(document):
       solr_doc[solr_field_name].append(geo_str)
     else:
       raise UnknownFieldTypeException(
-        "A document contains a field of unknown type: {}"
-        .format(field.type)
+        "A document contains a field of unknown type: {}".format(field.type)
       )
 
-  # TODO facets:
-  #   atom values should be saved to *_atom_facet_value
-  #   lowercased value should be saved to *_atom_facet
+  for facet in document.facets:
+    if facet.type == Facet.Type.ATOM:
+      # A single GAE facet goes as two Solr fields.
+      # <field_name>_atom_facet_value stores original value (not indexed).
+      solr_field_name = '{}_{}'.format(facet.name, 'atom_facet_value')
+      solr_doc[solr_field_name].append(facet.value)
+      # <field_name>_atom_facet stores lowercased value (indexed).
+      solr_field_name = '{}_{}'.format(facet.name, 'atom_facet')
+      solr_doc[solr_field_name].append(facet.value.lower())
+    elif facet.type == Facet.Type.NUMBER:
+      solr_field_name = '{}_{}'.format(facet.name, 'number_facet')
+      solr_doc[solr_field_name].append(facet.value)
+    else:
+      raise UnknownFacetTypeException(
+        "A document contains a facet of unknown type: {}".format(facet.type)
+      )
+
   return solr_doc
 
 
@@ -315,33 +460,45 @@ def _from_solr_document(solr_doc):
     An instance of models.ScoredDocument.
   """
   fields = []
+  facets = []
   for solr_field_name, values in solr_doc.items():
-    # Extract field name, type and language from solr_field_name
     try:
-      name, type_, language = parse_solr_field_name(solr_field_name)
+      # Extract field name, type and language from solr_field_name
+      name, solr_type_, language = parse_solr_field_name(solr_field_name)
     except ValueError:
+      # Skip Solr fields created outside SearchService2
       continue
 
-    # Convert string values to python types if applicable
-    if type_ == Field.Type.DATE:
-      values = [
-        datetime.strptime(datetime_str, '%Y-%m-%dT%H:%M:%SZ')
-        for datetime_str in values
-      ]
-    elif type_ == Field.Type.GEO:
-      values = [
-        tuple([float(lat_or_lng_str) for lat_or_lng_str in geo_str.split(',')])
-        for geo_str in values
-      ]
+    if solr_type_ == SolrSchemaFieldInfo.Type.ATOM_FACET_INDEX:
+      # Skip lowercased version of atom facet.
+      # It always goes together with field SolrSchemaFieldInfo.Type.ATOM_FACET.
+      continue
 
-    # Add field for each value
-    for value in values:
-      field = Field(type=type_, name=name, value=value, language=language)
-      fields.append(field)
+    gae_type = _SOLR_TO_GAE_TYPE_MAPPING[solr_type_]
+
+    # Convert string values to python types if applicable
+    if gae_type == Field.Type.DATE:
+      values = [datetime.strptime(datetime_str, '%Y-%m-%dT%H:%M:%SZ')
+                for datetime_str in values]
+    elif gae_type == Field.Type.GEO:
+      lat_lng_strs = (geo_str.split(',') for geo_str in values)
+      values = [(lat_str, lng_str) for lat_str, lng_str in lat_lng_strs]
+
+    if SolrSchemaFieldInfo.Type.is_facet(solr_type_):
+      # Add facet for each value
+      for value in values:
+        facet = Facet(type=gae_type, name=name, value=value)
+        facets.append(facet)
+    else:
+      # Add field for each value
+      for value in values:
+        field = Field(type=gae_type, name=name, value=value, language=language)
+        fields.append(field)
 
   return ScoredDocument(
     doc_id=solr_doc['id'],
     fields=fields,
+    facets=facets,
     language=solr_doc['language'],
     sort_scores=None,   # Is not supported yet
     expressions=None,   # Is not supported yet
@@ -350,18 +507,19 @@ def _from_solr_document(solr_doc):
   )
 
 
-def _from_solr_facet(solr_facet):
-  # TODO
-  pass
-
-
-_FIELD_TYPE = 'atom|number|date|geo|txt'
-_FIELD_TYPE_MAPPING = {
-  'atom': Field.Type.ATOM,
-  'number': Field.Type.NUMBER,
-  'date': Field.Type.DATE,
-  'geo': Field.Type.GEO,
-  'txt': Field.Type.TEXT
+_FIELD_TYPE = (
+  'atom|number|date|geo|txt'
+  '|atom_facet|atom_facet_value|number_facet'
+)
+_SOLR_TO_GAE_TYPE_MAPPING = {
+  SolrSchemaFieldInfo.Type.ATOM_FIELD: Field.Type.ATOM,
+  SolrSchemaFieldInfo.Type.NUMBER_FIELD: Field.Type.NUMBER,
+  SolrSchemaFieldInfo.Type.DATE_FIELD: Field.Type.DATE,
+  SolrSchemaFieldInfo.Type.GEO_FIELD: Field.Type.GEO,
+  SolrSchemaFieldInfo.Type.TEXT_FIELD: Field.Type.TEXT,
+  SolrSchemaFieldInfo.Type.ATOM_FACET_INDEX: Facet.Type.ATOM,
+  SolrSchemaFieldInfo.Type.ATOM_FACET: Facet.Type.ATOM,
+  SolrSchemaFieldInfo.Type.NUMBER_FACET: Facet.Type.NUMBER,
 }
 _LANGUAGE = '|'.join(SUPPORTED_LANGUAGES)
 _FIELD_NAME_PATTERN = re.compile(
@@ -371,13 +529,13 @@ _FIELD_NAME_PATTERN = re.compile(
 
 
 def parse_solr_field_name(solr_field_name):
-  """ Extracts GAE field name, field type and language
+  """ Extracts GAE field/facet name, field/facet type and language
   from Solr field name.
 
   Args:
     solr_field_name: a str representing field name of Solr collection.
   Returns:
-    A tuple of (<field_name>, <field_type>, <language>).
+    A tuple of (<field/facet_name>, <field/facet_type>, <language>).
   """
   match = _FIELD_NAME_PATTERN.match(solr_field_name)
   if not match:
@@ -385,4 +543,4 @@ def parse_solr_field_name(solr_field_name):
   field_name = match.group('field_name')
   solr_type = match.group('solr_type')
   language = match.group('language') or ''
-  return field_name, _FIELD_TYPE_MAPPING[solr_type], language
+  return field_name, solr_type, language
