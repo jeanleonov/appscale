@@ -33,7 +33,6 @@ def generate_fields(solr_field_names):
   return fields, grouped_fields
 
 
-
 FIELDS, GROUPED_FIELDS = generate_fields([
   'tag_atom',
   'name_atom',
