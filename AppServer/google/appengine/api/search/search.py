@@ -1041,7 +1041,7 @@ class FacetRange(object):
     FacetRange('good', start='3.0', end='3.5')
   """
 
-  def __init__(self, name=None, start=None, end=None):
+  def __init__(self, name='', start=None, end=None):
     """Initializer.
 
     Args:

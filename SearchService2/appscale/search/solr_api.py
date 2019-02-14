@@ -355,15 +355,13 @@ class SolrAPI(object):
       )
       json_response = json.loads(response.body.decode('utf-8'))
       query_response = json_response['response']
-      logger.debug(u'QUERY_RESPONSE: {}'.format(response.body.decode('utf-8')))
       stats = json_response.get('stats')
-      stats_results = stats.get('stats_fields') if stats else None
       solr_search_result = SolrSearchResult(
         num_found=query_response['numFound'],
         documents=query_response['docs'],
         cursor=json_response.get('nextCursorMark'),
-        facet_results=json_response.get('facets'),
-        stats_results=stats_results
+        facet_results=json_response.get('facets', {}),
+        stats_results=stats.get('stats_fields', {}) if stats else {}
       )
       logger.info('Found {} and fetched {} documents from collection {}'
                   .format(solr_search_result.num_found,

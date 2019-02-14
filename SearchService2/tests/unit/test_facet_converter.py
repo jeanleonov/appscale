@@ -55,15 +55,15 @@ def test_refinements_filter():
       FacetRefinement(name='tag', value='sale', range=None),
       FacetRefinement(name='price', value=None, range=(None, 100)),
       FacetRefinement(name='price', value=None, range=(100, 500)),
-      FacetRefinement(name='year', value=2018, range=None),
+      FacetRefinement(name='year', value='[12,56)', range=None),
     ]
   )
   expected = (
     '(tag_atom_facet:"hi-tech"'
     ' OR tag_atom_facet:"furniture"'
     ' OR tag_atom_facet:"sale")'
-    ' AND (price_number_facet:[* TO 100) OR price_number_facet:[100 TO 500))'
-    ' AND (year_number_facet:"2018")'
+    ' AND (price_number_facet:[* TO 100} OR price_number_facet:[100 TO 500})'
+    ' AND (year_number_facet:[12 TO 56})'
   )
   actual_set = set(filter_str.split(' AND '))
   expected_set = set(expected.split(' AND '))
@@ -75,16 +75,18 @@ def test_discover_facets():
   product_solr_field = GROUPED_FACETS['product'][0]
   category_solr_field = GROUPED_FACETS['category'][0]
   country_solr_field = GROUPED_FACETS['country'][0]
+  price_solr_field = GROUPED_FACETS['price'][0]
   fake_stats = [
     (tag_solr_field, 203),
     (product_solr_field, 687),
     (category_solr_field, 167),
     (country_solr_field, 1023),
+    (price_solr_field, 365),
   ]
-  facet_items = discover_facets(
-    atom_facets_stats=fake_stats, facets_count=3, value_limit=5
+  facet_items, stats_items = discover_facets(
+    facets_stats=fake_stats, facets_count=4, value_limit=5
   )
-  expected_items = [
+  expected_facet_items = [
     ('country*', {
       'type': 'terms',
       'field': 'country_atom_facet',
@@ -101,7 +103,11 @@ def test_discover_facets():
       'limit': 5
     }),
   ]
-  assert facet_items == expected_items
+  expected_stats_items = [
+    (price_solr_field, '{!min=true max=true count=true}price_number_facet'),
+  ]
+  assert facet_items == expected_facet_items
+  assert stats_items == expected_stats_items
 
 
 def test_convert_facet_requests():
@@ -122,11 +128,13 @@ def test_convert_facet_requests():
     FacetRequest(
       name='year', value_limit=None,
       values=[],
-      ranges=[(1990, 2008), (2008, 2014), (2014, 2018)]
+      ranges=[]
     ),
   ]
-  facet_items = convert_facet_requests(GROUPED_FACETS, facet_requests)
-  expected_items = [
+  facet_items, stats_items = convert_facet_requests(
+    GROUPED_FACETS, facet_requests
+  )
+  expected_facet_items = [
     # Tag values facet
     ('tag:entertainment', {'query': 'tag_atom_facet:"entertainment"'}),
     ('tag:traveling', {'query': 'tag_atom_facet:"traveling"'}),
@@ -138,42 +146,43 @@ def test_convert_facet_requests():
       'limit': 6
     }),
     # Price ranges facet
-    ('price#[* TO 50)', {'query': 'price_number_facet:[* TO 50)'}),
-    ('price#[50 TO 150)', {'query': 'price_number_facet:[50 TO 150)'}),
-    ('price#[150 TO 500)', {'query': 'price_number_facet:[150 TO 500)'}),
-    ('price#[500 TO *)', {'query': 'price_number_facet:[500 TO *)'}),
-    # Year ranges facet
-    ('year#[1990 TO 2008)', {'query': 'year_number_facet:[1990 TO 2008)'}),
-    ('year#[2008 TO 2014)', {'query': 'year_number_facet:[2008 TO 2014)'}),
-    ('year#[2014 TO 2018)', {'query': 'year_number_facet:[2014 TO 2018)'}),
+    ('price#[* TO 50}', {'query': 'price_number_facet:[* TO 50}'}),
+    ('price#[50 TO 150}', {'query': 'price_number_facet:[50 TO 150}'}),
+    ('price#[150 TO 500}', {'query': 'price_number_facet:[150 TO 500}'}),
+    ('price#[500 TO *}', {'query': 'price_number_facet:[500 TO *}'}),
   ]
-  assert facet_items == expected_items
+  year_solr_field = GROUPED_FACETS['year'][0]
+  expected_stats_items = [
+    (year_solr_field, '{!min=true max=true count=true}year_number_facet'),
+  ]
+  assert facet_items == expected_facet_items
+  assert stats_items == expected_stats_items
 
 
 def test_convert_facet_results():
-  facet_results = convert_facet_results(solr_facet_results={
-    # Tag values facet
-    'tag:entertainment': {'count': 128},
-    'tag:traveling': {'count': 32},
-    'tag:food': {'count': 8},
-    # Country terms facet
-    'country*': {
-      'buckets': [
-        {'val': 'cn', 'count': 100},
-        {'val': 'us', 'count': 20},
-        {'val': 'uk', 'count': 5},
-      ]
+  facet_results = convert_facet_results(
+    solr_facet_results={
+      # Tag values facet
+      'tag:entertainment': {'count': 128},
+      'tag:traveling': {'count': 32},
+      'tag:food': {'count': 8},
+      # Country terms facet
+      'country*': {
+        'buckets': [
+          {'val': 'cn', 'count': 100},
+          {'val': 'us', 'count': 20},
+          {'val': 'uk', 'count': 5},
+        ]
+      },
+      # Price ranges facet
+      'price#[* TO 50}': {'count': 81},
+      'price#[50 TO 150}': {'count': 243},
+      'price#[150 TO 500}': {'count': 27},
+      'price#[500 TO *}': {'count': 3},
     },
-    # Price ranges facet
-    'price#[* TO 50)': {'count': 81},
-    'price#[50 TO 150)': {'count': 243},
-    'price#[150 TO 500)': {'count': 27},
-    'price#[500 TO *)': {'count': 3},
-    # Year ranges facet
-    'year#[1990 TO 2008)': {'count': 96},
-    'year#[2008 TO 2014)': {'count': 64},
-    'year#[2014 TO 2018)': {'count': 1024},
-  })
+    stats_results=[
+      ('year', {'min': 1986, 'max': 2019, 'count': 156})
+    ])
   expected = [
     FacetResult(
       name='tag',
@@ -192,8 +201,8 @@ def test_convert_facet_results():
     ),
     FacetResult(
       name='year',
-      values=[],
-      ranges=[(1990, 2008, 96), (2008, 2014, 64), (2014, 2018, 1024)]
+      values=[('[1986,2019)', 156)],
+      ranges=[]
     ),
   ]
   # Order doesn't matter, so let's sort actual and expected.

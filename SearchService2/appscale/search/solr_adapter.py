@@ -201,6 +201,7 @@ class SolrAdapter(object):
     # Process Facet params
     refinement_filter = None
     facet_items = []
+    stats_items = []
     if facet_refinements:
       # Determine if we need to filter by refinement.
       refinement_filter = facet_converter.generate_refinement_filter(
@@ -208,19 +209,26 @@ class SolrAdapter(object):
       )
     if auto_discover_facet_count:
       # Figure out what facets are specified for greater number of documents.
-      atom_facets_stats = yield self._get_atom_facets_stats(
+      atom_facets_stats = yield self._get_facets_stats(
         index_schema, query_options, refinement_filter
       )
       # Add auto-discovered facets to the list.
-      facet_items += facet_converter.discover_facets(
+      auto_facet_items, auto_stats_items = facet_converter.discover_facets(
         atom_facets_stats, auto_discover_facet_count,
         facet_auto_detect_limit
       )
+      facet_items += auto_facet_items
+      stats_items += auto_stats_items
     if facet_requests:
       # Add explicitly specified facets to the list.
-      facet_items += facet_converter.convert_facet_requests(
-        index_schema.grouped_facet_indexes, facet_requests
+      explicit_facet_items, explicit_stats_items = (
+        facet_converter.convert_facet_requests(
+          index_schema.grouped_facet_indexes, facet_requests
+        )
       )
+      facet_items += explicit_facet_items
+      stats_items += explicit_stats_items
+    stats_fields = [stats_line for solr_field, stats_line in stats_items]
 
     # DO ACTUAL QUERY:
     solr_result = yield self.solr.query_documents(
@@ -229,14 +237,20 @@ class SolrAdapter(object):
       cursor=cursor, fields=solr_projection_fields, sort=solr_sort_fields,
       def_type=query_options.def_type, query_fields=query_options.query_fields,
       facet_dict=dict(facet_items) if facet_items else None,
-      filter_=refinement_filter
+      stats_fields=stats_fields or None, filter_=refinement_filter
     )
 
     # Convert Solr results to unified models
     docs = [_from_solr_document(solr_doc)
             for solr_doc in solr_result.documents]
+    # Read stats results
+    stats_results = []
+    for solr_field, stats_line in stats_items:
+      stats_info = solr_result.stats_results[solr_field.solr_name]
+      stats_results.append((solr_field.gae_name, stats_info))
+    # Convert facet results from Solr facets and stats
     facet_results = facet_converter.convert_facet_results(
-      solr_result.facet_results
+      solr_result.facet_results, stats_results
     )
     result = SearchResult(
       num_found=solr_result.num_found, scored_documents=docs,
@@ -286,12 +300,12 @@ class SolrAdapter(object):
         language=language, docs_number=info.get('docs', 0)
       )
       if SolrSchemaFieldInfo.Type.is_facet_value(type_):
-        facets.append(schema_field)
         add_value(grouped_facet_values, gae_name, schema_field)
       if SolrSchemaFieldInfo.Type.is_facet_index(type_):
-        facets.append(schema_field)
         add_value(grouped_facet_indexes, gae_name, schema_field)
-      if not SolrSchemaFieldInfo.Type.is_facet(type_):
+      if SolrSchemaFieldInfo.Type.is_facet(type_):
+        facets.append(schema_field)
+      else:
         fields.append(schema_field)
         add_value(grouped_fields, gae_name, schema_field)
 
@@ -329,8 +343,8 @@ class SolrAdapter(object):
       grouped_facet_indexes=grouped_facet_indexes
     ))
 
-  async def _get_atom_facets_stats(self, index_schema, query_options,
-                                   refinement_filter):
+  async def _get_facets_stats(self, index_schema, query_options,
+                              refinement_filter):
     """ Retrieves statistics of fields corresponding to facets of atom type.
     Statistics per fields contains only number of documents containing
     that solr field from those documents which matches the query.
@@ -342,14 +356,14 @@ class SolrAdapter(object):
     Returns:
       A list of tuples (<SolrSchemaFieldInfo>, <documents count>).
     """
-    atom_facets = [
+    facets_fields = [
       facet for facet in index_schema.facets
-      if facet.type == SolrSchemaFieldInfo.Type.ATOM_FACET_INDEX
+      if SolrSchemaFieldInfo.Type.is_facet_index(facet.type)
     ]
     request_facet_stats = [
-      # e.g.: '{!count=true}myfacetname_atom_facet'
+      # e.g.: '{!count=true}myfacetname_facet'
       '{{!count=true}}{field_name}'.format(field_name=facet.solr_name)
-      for facet in atom_facets
+      for facet in facets_fields
     ]
     solr_result = await self.solr.query_documents(
       collection=index_schema.collection, query=query_options.query_string,
@@ -358,7 +372,7 @@ class SolrAdapter(object):
       stats_fields=request_facet_stats
     )
     field_stats_items = []
-    for facet in atom_facets:
+    for facet in facets_fields:
       documents_count = solr_result.stats_results[facet.solr_name]['count']
       field_stats_items.append((facet, documents_count))
     return field_stats_items

@@ -357,8 +357,8 @@ def _fill_pb_facet_result(pb_facet_result, facet_result):
                                        end if end is not None else '*')
     new_value.count = count
     new_value.refinement.name = facet_result.name
-    new_value.refinement.range.start = start
-    new_value.refinement.range.end = end
+    new_value.refinement.range.start = str(start)
+    new_value.refinement.range.end = str(end)
 
 
 def _from_pb_facet_request(pb_facet_request):
@@ -367,7 +367,11 @@ def _from_pb_facet_request(pb_facet_request):
     name=pb_facet_request.name,
     value_limit=params.value_limit,
     values=list(params.value_constraint),
-    ranges=[(range_.start, range_.end) for range_ in params.range],
+    ranges=[
+      (int(range_.start) if range_.start else None,
+       int(range_.end) if range_.end else None)
+      for range_ in params.range
+    ],
   )
 
 
