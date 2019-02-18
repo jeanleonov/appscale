@@ -345,7 +345,24 @@ installsolr()
 
 installsolr7()
 {
-    "${APPSCALE_HOME}/SearchService2/solr-management/ensure_solr_installed.sh"
+    SOLR_VER=7.6.0
+    SOLR_PACKAGE="solr-${SOLR_VER}.tgz"
+    SOLR_PACKAGE_MD5="6363337322523b68c377177b1232c49e"
+    cachepackage ${SOLR_PACKAGE} ${SOLR_PACKAGE_MD5}
+
+    SOLR_EXTRACT_DIR=/opt/
+    SOLR_VAR_DIR=/var/solr/
+    SOLR_ARCHIVE="${PACKAGE_CACHE}/${SOLR_PACKAGE}"
+
+    tar xzf "${SOLR_ARCHIVE}" solr-${SOLR_VER}/bin/install_solr_service.sh --strip-components=2
+
+    echo "Installing Solr ${SOLR_VER}."
+    # -n  Do not start solr service after install.
+    # -f  Upgrade Solr. Overwrite symlink and init script of previous installation.
+    sudo bash ./install_solr_service.sh "${SOLR_ARCHIVE}" \
+              -d "${SOLR_VAR_DIR}" \
+              -i "${SOLR_EXTRACT_DIR}" \
+              -n -f
 }
 
 installcassandra()
