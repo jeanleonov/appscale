@@ -11,6 +11,7 @@ require 'user_app_client'
 require 'datastore_server'
 require 'taskqueue'
 require 'blobstore'
+require 'search'
 
 # As AppServers within AppScale are usually single-threaded, we run multiple
 # copies of them and load balance traffic to them. Since nginx (our first
@@ -143,7 +144,7 @@ module HAProxy
 
     # Internal services uses a different haproxy. Normal application gets
     # prepended with 'gae_' to avoid possible collisions.
-    if [TaskQueue::NAME, DatastoreServer::NAME,
+    if [TaskQueue::NAME, DatastoreServer::NAME, Search2::NAME,
         UserAppClient::NAME, BlobServer::NAME].include?(name)
       full_version_name = "#{name}"
       config_path = File.join(SERVICE_SITES_PATH,
@@ -250,6 +251,9 @@ module HAProxy
     elsif server_name == DatastoreServer::NAME
       # Allow custom number of connections at a time for datastore.
       maxconn = DatastoreServer::MAXCONN
+    elsif server_name == Search2::NAME
+      # Allow custom number of connections at a time for search2.
+      maxconn = Search2::MAXCONN
     else
       # Allow only one connection at a time for other services.
       maxconn = 1
