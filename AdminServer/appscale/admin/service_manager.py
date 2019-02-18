@@ -10,6 +10,9 @@ import socket
 import subprocess
 import time
 
+from builtins import range
+
+from kazoo.protocol.states import KazooState
 from psutil import NoSuchProcess
 from tornado import gen, web
 from tornado.httpclient import AsyncHTTPClient
@@ -17,6 +20,7 @@ from tornado.ioloop import IOLoop, PeriodicCallback
 from tornado.locks import Lock as AsyncLock
 from tornado.options import options
 
+from appscale.admin.constants import BOOKED_PORTS, NoPortsAvailable
 from appscale.common.async_retrying import retry_data_watch_coroutine
 from appscale.common.constants import (ASSIGNMENTS_PATH, CGROUP_DIR, HTTPCodes,
                                        LOG_DIR, VAR_DIR)
@@ -30,6 +34,7 @@ logger = logging.getLogger(__name__)
 class ServiceTypes(object):
   """ Services recognized by the ServiceManager. """
   DATASTORE = 'datastore'
+  SEARCH = 'search'
 
 
 class ServerStates(object):
@@ -97,80 +102,154 @@ def pids_in_slice(slice_name):
   return pids
 
 
-class Server(object):
+class Service(object):
+  def __init__(self, type_, slice_, start_cmd_matcher, start_cmd_builder,
+               health_probe, min_port, max_port,
+               start_timeout=30, status_timeout=10, stop_timeout=5,
+               monit_name_fmt='{type}_server-{port}',
+               log_filename_fmt='{type}_server-{port}.log'):
+    self.type = type_
+    self.slice = slice_
+    self.port_from_start_cmd = start_cmd_matcher
+    self.get_start_cmd = start_cmd_builder
+    self.health_probe = health_probe
+    self.min_port = min_port
+    self.max_port = max_port
+    self.start_timeout = start_timeout
+    self.status_timeout = status_timeout
+    self.stop_timeout = stop_timeout
+    self._monit_name_fmt = monit_name_fmt
+    self._log_filename_fmt = log_filename_fmt
+
+  def monit_name(self, port):
+    return self._monit_name_fmt.format(type=self.type, port=port)
+
+  def log_filename(self, port):
+    return self._log_filename_fmt.format(type=self.type, port=port)
+
+
+# =============================
+#    Datastore service info:
+# -----------------------------
+
+def port_from_datastore_start_cmd(args):
+  if len(args) < 2 or not args[1].endswith('appscale-datastore'):
+    raise ValueError('Not a datastore start command')
+  return int(args[args.index('--port') + 1])
+
+
+def datastore_start_cmd(port, assignment_options):
+  """ Starts a new datastore server. """
+  start_cmd = ['appscale-datastore',
+               '--type', 'cassandra',
+               '--port', str(port)]
+  if assignment_options.get('verbose'):
+    start_cmd.append('--verbose')
+  return start_cmd
+
+
+@gen.coroutine
+def datastore_health_probe(host_port):
+  http_client = AsyncHTTPClient()
+  try:
+    response = yield http_client.fetch('http://{}'.format(host_port))
+    raise gen.Return(response.code == 200)
+  except socket.error as error:
+    if error.errno != errno.ECONNREFUSED:
+      raise
+
+
+
+datastore_service = Service(
+  type_='datastore', slice_='appscale-datastore',
+  start_cmd_matcher=port_from_datastore_start_cmd,
+  start_cmd_builder=datastore_start_cmd, health_probe=datastore_health_probe,
+  min_port=4000, max_port=5999,
+  start_timeout=30, status_timeout=10, stop_timeout=5,
+  monit_name_fmt='datastore_server-{port}',
+  log_filename_fmt='datastore_server-{port}.log'
+)
+
+
+# ==========================
+#    Search service info:
+# --------------------------
+
+def port_from_search_start_cmd(args):
+  search_executable = '/opt/appscale_search2_server/bin/appscale-search2'
+  if len(args) < 2 or not args[1].endswith(search_executable):
+    raise ValueError('Not a search start command')
+  return int(args[args.index('--port') + 1])
+
+
+def search_start_cmd(port, assignment_options):
+  start_cmd = ['/opt/appscale_search2_server/bin/appscale-search2',
+               '--zk-locations'] + options.zk_locations + [
+               '--host', options.private_ip,
+               '--port', str(port)]
+  if assignment_options.get('verbose'):
+    start_cmd.append('--verbose')
+  return start_cmd
+
+
+@gen.coroutine
+def search_health_probe(host_port):
+  http_client = AsyncHTTPClient()
+  try:
+    response = yield http_client.fetch('http://{}/_health'.format(host_port))
+    if response.code != 200:
+      raise gen.Return(False)
+    health_status = json.loads(response.body.decode('utf-8'))
+    logger.info('Search service reported status: {}'.format(health_status))
+    if health_status['zookeeper_state'] != KazooState.CONNECTED:
+      logger.warning('Zookeeper client state at search service is {}'
+                     .format(health_status['zookeeper_state']))
+    if not health_status['solr_live_nodes']:
+      logger.warning('There are no Solr live nodes available')
+    raise gen.Return(True)
+  except socket.error as error:
+    if error.errno != errno.ECONNREFUSED:
+      raise
+
+
+search_service = Service(
+  type_='search', slice_='appscale-search',
+  start_cmd_matcher=port_from_search_start_cmd,
+  start_cmd_builder=search_start_cmd, health_probe=search_health_probe,
+  min_port=31000, max_port=31999,
+  start_timeout=30, status_timeout=10, stop_timeout=5,
+  monit_name_fmt='search_server-{port}',
+  log_filename_fmt='search_server-{port}.log'
+)
+
+
+class ServerManager(object):
   """ Keeps track of the status and location of a specific server. """
-  def __init__(self, service_type, port):
+
+  KNOWN_SERVICES = [datastore_service, search_service]
+
+  def __init__(self, service, port, assignment_options=None, start_cmd=None):
     """ Creates a new Server.
 
     Args:
-      service_type: A string specifying the service type.
+      service: An instance of ServiceProperties.
       port: An integer specifying the port to use.
+      assignment_options: A dict representing assignment options from zookeeper.
     """
+    self.service = service
     self.failure = None
     self.failure_time = None
     # This is for compatibility with Hermes, which expects a monit name.
-    self.monit_name = None
+    self.monit_name = self.service.monit_name(port)
     self.port = port
     self.process = None
     self.state = ServerStates.NEW
-    self.type = service_type
-
-  @gen.coroutine
-  def ensure_running(self):
-    raise NotImplementedError()
-
-  @gen.coroutine
-  def restart(self):
-    raise NotImplementedError()
-
-  @gen.coroutine
-  def start(self):
-    raise NotImplementedError()
-
-  @gen.coroutine
-  def stop(self):
-    raise NotImplementedError()
-
-  def __repr__(self):
-    """ Represents the service details.
-
-    Returns:
-      A string representing the service.
-    """
-    return '<Service: {}:{}, {}>'.format(self.type, self.port, self.state)
-
-
-class DatastoreServer(Server):
-  """ Keeps track of the status and location of a datastore server. """
-
-  # The datastore backend.
-  DATASTORE_TYPE = 'cassandra'
-
-  # The cgroup slice used to start datastore server processes.
-  SLICE = 'appscale-datastore'
-
-  # The number of seconds to wait for the server to start.
-  START_TIMEOUT = 30
-
-  # The number of seconds to wait for a status check.
-  STATUS_TIMEOUT = 10
-
-  # The number of seconds to wait for the server to stop.
-  STOP_TIMEOUT = 5
-
-  def __init__(self, port, http_client, verbose):
-    """ Creates a new DatastoreServer.
-
-    Args:
-      port: An integer specifying the port to use.
-      http_client: An AsyncHTTPClient
-      verbose: A boolean that sets logging level to debug.
-    """
-    super(DatastoreServer, self).__init__(ServiceTypes.DATASTORE, port)
-    self.monit_name = 'datastore_server-{}'.format(port)
-    self._http_client = http_client
+    self.type = self.service.type
+    if assignment_options is None and start_cmd is None:
+      raise TypeError('assignment_options or start_cmd should be specified')
+    self._assignment_options = assignment_options
+    self._start_cmd = start_cmd
     self._stdout = None
-    self._verbose = verbose
 
     # Serializes start, stop, and monitor operations.
     self._management_lock = AsyncLock()
@@ -179,21 +258,24 @@ class DatastoreServer(Server):
   def ensure_running(self):
     """ Checks to make sure the server is still running. """
     with (yield self._management_lock.acquire()):
-      yield self._wait_for_service(timeout=self.STATUS_TIMEOUT)
+      yield self._wait_for_service(timeout=self.service.status_timeout)
 
   @staticmethod
-  def from_pid(pid, http_client):
+  def from_pid(pid, service):
     """ Creates a new DatastoreServer from an existing process.
 
     Args:
       pid: An integers specifying a process ID.
-      http_client: An AsyncHTTPClient.
+      service
     """
     process = psutil.Process(pid)
     args = process.cmdline()
-    port = int(args[args.index('--port') + 1])
-    verbose = '--verbose' in args
-    server = DatastoreServer(port, http_client, verbose)
+    try:
+      port = service.port_from_start_cmd(args)
+    except ValueError:
+      raise ValueError('Process #{} ({}) is not recognized'.format(args, pid))
+
+    server = ServerManager(service, port, start_cmd=args)
     server.process = process
     server.state = ServerStates.RUNNING
     return server
@@ -211,27 +293,26 @@ class DatastoreServer(Server):
         return
 
       self.state = ServerStates.STARTING
-      start_cmd = ['appscale-datastore',
-                   '--type', self.DATASTORE_TYPE,
-                   '--port', str(self.port)]
-      if self._verbose:
-        start_cmd.append('--verbose')
+      if not self._start_cmd:
+        self._start_cmd = self.service.get_start_cmd(
+          self.port, self._assignment_options
+        )
+      log_filename = self.service.log_filename(self.port)
 
-      log_file = os.path.join(LOG_DIR,
-                              'datastore_server-{}.log'.format(self.port))
+      log_file = os.path.join(LOG_DIR, log_filename)
       self._stdout = open(log_file, 'a')
 
       # With systemd-run, it's possible to start the process within the slice.
       # To keep things simple and maintain backwards compatibility with
       # pre-systemd distros, move the process after starting it.
-      self.process = psutil.Popen(start_cmd, stdout=self._stdout,
+      self.process = psutil.Popen(self._start_cmd, stdout=self._stdout,
                                   stderr=subprocess.STDOUT)
 
-      tasks_location = os.path.join(slice_path(self.SLICE), 'tasks')
+      tasks_location = os.path.join(slice_path(self.service.slice), 'tasks')
       with open(tasks_location, 'w') as tasks_file:
         tasks_file.write(str(self.process.pid))
 
-      yield self._wait_for_service(timeout=self.START_TIMEOUT)
+      yield self._wait_for_service(timeout=self.service.start_timeout)
       self.state = ServerStates.RUNNING
 
   @gen.coroutine
@@ -260,7 +341,7 @@ class DatastoreServer(Server):
 
       initial_stop_time = time.time()
       while True:
-        if time.time() > initial_stop_time + self.STOP_TIMEOUT:
+        if time.time() > initial_stop_time + self.service.stop_timeout:
           self.process.kill()
           break
 
@@ -282,7 +363,7 @@ class DatastoreServer(Server):
     Raises:
       StartTimeout if start time exceeds given timeout.
     """
-    server_url = 'http://localhost:{}'.format(self.port)
+    server_location = '{}:{}'.format(options.private_ip, self.port)
     start_time = time.time()
     try:
       while True:
@@ -292,13 +373,11 @@ class DatastoreServer(Server):
         if time.time() > start_time + timeout:
           raise StartTimeout('{} took too long to start'.format(self))
 
-        try:
-          response = yield self._http_client.fetch(server_url)
-          if response.code == 200:
-            break
-        except socket.error as error:
-          if error.errno != errno.ECONNREFUSED:
-            raise
+        health_result = self.service.health_probe(server_location)
+        if isinstance(health_result, gen.Future):
+          health_result = yield health_result
+        if health_result:
+          break
 
         yield gen.sleep(1)
     except Exception as error:
@@ -308,6 +387,14 @@ class DatastoreServer(Server):
       self.state = ServerStates.FAILED
       raise error
 
+  def __repr__(self):
+    """ Represents the service details.
+
+    Returns:
+      A string representing the service.
+    """
+    return '<Service: {}:{}, {}>'.format(self.type, self.port, self.state)
+
 
 class ServiceManager(object):
   """ Schedules servers to fulfill service assignments. """
@@ -316,10 +403,10 @@ class ServiceManager(object):
   SCHEDULED_STATES = (ServerStates.STARTING, ServerStates.RUNNING)
 
   # Associates service names with server classes.
-  SERVICE_MAP = {'datastore': DatastoreServer}
-
-  # The first port to use when starting a server.
-  START_PORT = 4000
+  SERVICE_MAP = {
+    'datastore': datastore_service,
+    'search': search_service,
+  }
 
   # The number of seconds to wait between cleaning up servers.
   GROOMING_INTERVAL = 10
@@ -340,19 +427,17 @@ class ServiceManager(object):
     self._http_client = AsyncHTTPClient()
     self._zk_client = zk_client
 
-  @classmethod
-  def get_state(cls, http_client=None):
+  @staticmethod
+  def get_state():
     """ Collects a list of running servers from cgroup process IDs.
 
-    Args:
-      http_client: An AsyncHTTPClient.
     Returns:
       A list of Server objects.
     """
     state = []
-    for server_class in cls.SERVICE_MAP.values():
-      for pid in pids_in_slice(server_class.SLICE):
-        server = server_class.from_pid(pid, http_client)
+    for service in ServiceManager.SERVICE_MAP.values():
+      for pid in pids_in_slice(service.slice):
+        server = ServerManager.from_pid(pid, service)
         state.append(server)
 
     return state
@@ -362,14 +447,14 @@ class ServiceManager(object):
     logger.info('Starting ServiceManager')
 
     # Ensure cgroup process containers exist.
-    for server_class in self.SERVICE_MAP.values():
+    for service in self.SERVICE_MAP.values():
       try:
-        os.makedirs(slice_path(server_class.SLICE))
+        os.makedirs(slice_path(service.slice))
       except OSError as error:
         if error.errno != errno.EEXIST:
           raise
 
-    self.state = self.get_state(self._http_client)
+    self.state = self.get_state()
     self._zk_client.DataWatch(self._assignments_path,
                               self._update_services_watch)
     PeriodicCallback(self._groom_servers,
@@ -411,8 +496,8 @@ class ServiceManager(object):
       return False
 
     self.state = [server for server in self.state if not outdated(server)]
-    for service_type, options in self.assignments.items():
-      yield self._schedule_service(service_type, options)
+    for service_type, assignment_options in self.assignments.items():
+      yield self._schedule_service(service_type, assignment_options)
 
     for server in self.state:
       if server.state != ServerStates.RUNNING:
@@ -420,34 +505,34 @@ class ServiceManager(object):
 
       IOLoop.current().spawn_callback(server.ensure_running)
 
-  def _get_open_port(self):
+  def _get_open_port(self, service):
     """ Selects an available port for a server to use.
 
     Returns:
       An integer specifying a port.
     """
-    assigned_ports = set(service.port for service in self.state)
-    port = self.START_PORT
-    while True:
+    assigned_ports = BOOKED_PORTS | set(service.port for service in self.state)
+    for port in range(service.min_port, service.max_port):
       # Skip ports that have been assigned.
-      if port in assigned_ports:
-        port += 1
-        continue
-
-      return port
+      if port not in assigned_ports:
+        return port
+    raise NoPortsAvailable(
+      'Exhausted available port for {} in range from {} to {}'
+      .format(service.type, service.min_port, service.max_port)
+    )
 
   @gen.coroutine
-  def _schedule_service(self, service_type, options):
+  def _schedule_service(self, service_type, assignment_options):
     """ Schedules servers to fulfill service assignment.
 
     Args:
       service_type: A string specifying the service type.
-      options: A dictionary specifying options to use when starting servers.
+      assignment_options: A dictionary specifying options to use when starting servers.
     """
     scheduled = [server for server in self.state
                  if server.type == service_type and
                  server.state in self.SCHEDULED_STATES]
-    to_start = options['count'] - len(scheduled)
+    to_start = assignment_options['count'] - len(scheduled)
     if to_start < 0:
       stopped = 0
       for server in reversed(scheduled):
@@ -461,9 +546,9 @@ class ServiceManager(object):
       return
 
     for _ in range(to_start):
-      port = self._get_open_port()
-      server_class = self.SERVICE_MAP[service_type]
-      server = server_class(port, self._http_client, options['verbose'])
+      service = self.SERVICE_MAP[service_type]
+      port = self._get_open_port(service)
+      server = ServerManager(service, port, assignment_options)
       self.state.append(server)
       logger.info('Starting {}'.format(server))
       IOLoop.current().spawn_callback(server.start)
@@ -476,8 +561,8 @@ class ServiceManager(object):
       assignments: A dictionary specifying service assignments.
     """
     self.assignments = assignments
-    for service_type, options in assignments.items():
-      yield self._schedule_service(service_type, options)
+    for service_type, assignment_options in assignments.items():
+      yield self._schedule_service(service_type, assignment_options)
 
   def _update_services_watch(self, encoded_assignments, _):
     """ Updates service schedules to fulfill assignments.
