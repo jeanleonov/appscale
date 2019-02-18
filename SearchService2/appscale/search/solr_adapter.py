@@ -19,6 +19,7 @@ from appscale.search.constants import (
 from appscale.search.models import (
   Field, ScoredDocument, SearchResult, SolrIndexSchemaInfo, SolrSchemaFieldInfo
 )
+from appscale.search.settings import SearchServiceSettings
 from appscale.search.solr_api import SolrAPI
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,8 @@ class SolrAdapter(object):
     Args:
       zk_client: An instance of kazoo.client.KazooClient.
     """
-    self.solr = SolrAPI(zk_client, SOLR_ZK_ROOT)
+    self._settings = SearchServiceSettings(zk_client)
+    self.solr = SolrAPI(zk_client, SOLR_ZK_ROOT, self._settings)
 
   @gen.coroutine
   def index_documents(self, app_id, namespace, index_name, documents):

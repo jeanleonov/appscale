@@ -47,7 +47,7 @@ class SolrAPI(object):
   A helper class for performing basic operations with Solr.
   """
 
-  def __init__(self, zk_client, solr_zk_root):
+  def __init__(self, zk_client, solr_zk_root, settings):
     """ Initializes SolrAPI object.
     Configures zookeeper watching of Solr live nodes.
 
@@ -57,6 +57,7 @@ class SolrAPI(object):
     """
     self._zk_client = zk_client
     self._solr_zk_root = solr_zk_root
+    self._settings = settings
     self._solr_live_nodes_list = []
     self._solr_live_nodes_cycle = itertools.cycle(self._solr_live_nodes_list)
     self._local_solr = None
@@ -95,6 +96,10 @@ class SolrAPI(object):
     if not self._solr_live_nodes_list:
       raise SolrIsNotReachable('There are no Solr live nodes')
     return next(self._solr_live_nodes_cycle)
+
+  @property
+  def live_nodes(self):
+      return self._solr_live_nodes_list
 
   @gen.coroutine
   def request(self, method, path, params=None, json_data=None, headers=None):
@@ -198,9 +203,10 @@ class SolrAPI(object):
           'action': 'CREATE',
           'name': collection,
           'collection.configName': APPSCALE_CONFIG_SET_NAME,
-          'numShards': 1,            # TODO: Store per-project replications
-          'replicationFactor': 1,    # ||||  and sharding configs in Zookeeper.
-          'maxShardsPerNode': 1,     #
+          'replicationFactor': self._settings.replication_factor,
+          'autoAddReplicas': True,
+          'numShards': self._settings.shards_number,
+          'maxShardsPerNode': self._settings.max_shards_per_node,
         }
       )
       logger.info('Successfully created collection {} ({})'

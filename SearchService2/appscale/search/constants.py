@@ -12,6 +12,12 @@ APPSCALE_CONFIG_SET_NAME = 'appscale_search_api_config'
 # Prefix for all Solr-related nodes in Zookeeper.
 SOLR_ZK_ROOT = '/solr'
 
+# The ZooKeeper path where a list of active search servers is stored.
+SEARCH_SERVERS_NODE = '/appscale/search/live_nodes'
+
+# The ZooKeeper path where a replication configuration is stored.
+SERVICE_SETTINGS_NODE = '/appscale/search/service_settings'
+
 SUPPORTED_LANGUAGES = [
   'en',
   'ar',
@@ -104,3 +110,7 @@ class UnknownFacetTypeException(InternalError):
 
 class ParsingError(ValueError):
   """ Search query parsing failed """
+
+
+class MissingServiceSetting(InternalError):
+  """ One of search service settings is missing in Zookeeper """
