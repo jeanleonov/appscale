@@ -1,5 +1,5 @@
 """ Schedules servers to fulfill service assignments. """
-
+import collections
 import errno
 import json
 import logging
@@ -385,7 +385,7 @@ class ServerManager(object):
       self.failure_time = time.time()
       self.failure = error
       self.state = ServerStates.FAILED
-      raise error
+      raise
 
   def __repr__(self):
     """ Represents the service details.
@@ -403,10 +403,10 @@ class ServiceManager(object):
   SCHEDULED_STATES = (ServerStates.STARTING, ServerStates.RUNNING)
 
   # Associates service names with server classes.
-  SERVICE_MAP = {
-    'datastore': datastore_service,
-    'search': search_service,
-  }
+  SERVICE_MAP = collections.OrderedDict([
+    ('datastore', datastore_service),
+    ('search', search_service),
+  ])
 
   # The number of seconds to wait between cleaning up servers.
   GROOMING_INTERVAL = 10

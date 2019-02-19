@@ -37,12 +37,13 @@ else
 fi
 
 
-
 # Generating proper solr.in.sh with needed SolrCloud configurations.
 HEAP_REDUCTION="${HEAP_REDUCTION:-0.0}"
+TOTAL_MEM_KB=$(awk '/MemTotal/ { print $2 }' /proc/meminfo)
 # Give Solr at most half of total memory minus heap reduction.
-HEAP_FORMULA="$2 / 2 * (1-${HEAP_REDUCTION}) / 1024"
-SOLR_MEM_MB="$(awk '/MemTotal/ { printf "%d \n", ${HEAP_FORMULA} }' /proc/meminfo)"
+SOLR_MEM_MB=$(echo "$TOTAL_MEM_KB $HEAP_REDUCTION" \
+              | awk '{ printf "%d", $1 * (1 - $2) / 1024 / 2 }')
+
 export SOLR_MEM="${SOLR_MEM_MB}m"
 export ZK_HOST
 export PRIVATE_IP
@@ -51,13 +52,13 @@ if cmp -s "/tmp/solr.in.sh" "/etc/default/solr.in.sh"
 then
     echo "/etc/default/solr.in.sh has no changes."
     echo "Making sure Solr is running."
-    sudo service solr start
+    sudo systemctl start solr
     sudo systemctl enable solr
 else
     echo "Copying new solr.in.sh to /etc/default/solr.in.sh"
     sudo cp "/tmp/solr.in.sh" "/etc/default/solr.in.sh"
     echo "Making sure Solr is restarted."
-    sudo service solr restart
+    sudo systemctl restart solr
     sudo systemctl enable solr
 fi
 

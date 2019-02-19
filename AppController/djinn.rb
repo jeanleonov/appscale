@@ -1630,7 +1630,7 @@ class Djinn
   end
 
   def check_api_services
-    # LoadBalancers needs to setup the routing 
+    # LoadBalancers needs to setup the routing
     # for the datastore and search2 before proceeding.
     while my_node.is_load_balancer? && !update_db_haproxy
       Djinn.log_info('Waiting for Datastore assignements ...')
@@ -3350,6 +3350,9 @@ class Djinn
     threads.each { |t| t.join }
     Djinn.log_info('API services have started on this node.')
 
+    # Start Hermes with integrated stats service
+    start_hermes
+
     # Leader node starts additional services.
     if my_node.is_shadow?
       @state = 'Assigning Datastore and Search2 processes'
@@ -4008,6 +4011,7 @@ class Djinn
     master_ips = []
     memcache_ips = []
     search_ips = []
+    search2_ips = []
     slave_ips = []
     taskqueue_ips = []
     my_public = my_node.public_ip
@@ -4023,6 +4027,7 @@ class Djinn
         master_ips << node.private_ip if node.is_db_master?
         memcache_ips << node.private_ip if node.is_memcache?
         search_ips << node.private_ip if node.is_search?
+        search2_ips << node.private_ip if node.is_search2?
         slave_ips << node.private_ip if node.is_db_slave?
         taskqueue_ips << node.private_ip if node.is_taskqueue_master? ||
           node.is_taskqueue_slave?
@@ -4038,11 +4043,13 @@ class Djinn
     login_content = login_ip + "\n"
     master_content = master_ips.join("\n") + "\n"
     search_content = search_ips.join("\n") + "\n"
+    search2_content = search2_ips.join("\n") + "\n"
     slaves_content = slave_ips.join("\n") + "\n"
 
     new_content = all_ips_content + login_content + load_balancer_content +
       master_content + memcache_content + my_public + my_private +
-      num_of_nodes + taskqueue_content + search_content + slaves_content
+      num_of_nodes + taskqueue_content + search_content + search2_content +
+      slaves_content
 
     # If nothing changed since last time we wrote locations file(s), skip it.
     if new_content != @locations_content
@@ -4098,6 +4105,12 @@ class Djinn
       unless search_content.chomp.empty?
         HelperFunctions.write_file(Search::SEARCH_LOCATION_FILE,
                                    search_content)
+      end
+
+      Djinn.log_info("Search2 service locations: #{search2_ips}.")
+      unless search2_content.chomp.empty?
+        HelperFunctions.write_file('/etc/appscale/search2_ips',
+                                   search2_content)
       end
     end
   end
