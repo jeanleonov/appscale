@@ -1631,33 +1631,45 @@ class Djinn
 
   def check_api_services
     # LoadBalancers needs to setup the routing
-    # for the datastore and search2 before proceeding.
+    # for the datastore and search2 (if applicable) before proceeding.
     while my_node.is_load_balancer? && !update_db_haproxy
       Djinn.log_info('Waiting for Datastore assignements ...')
       sleep(SMALL_WAIT)
     end
-    while my_node.is_load_balancer? && !update_search2_haproxy
-      Djinn.log_info('Waiting for Search2 assignements ...')
-      sleep(SMALL_WAIT)
+
+    has_search2 = !get_search2.empty?
+    if has_search2
+      while my_node.is_load_balancer? && !update_search2_haproxy
+        Djinn.log_info('Waiting for Search2 assignements ...')
+        sleep (SMALL_WAIT)
+      end
     end
 
     # Wait till the Datastore is functional.
     loop do
-      db_open = HelperFunctions.is_port_open?(get_load_balancer.private_ip,
-                                              DatastoreServer::PROXY_PORT)
-      search_open = HelperFunctions.is_port_open?(get_load_balancer.private_ip,
-                                                  Search2::PROXY_PORT)
-      break if db_open and search_open
-      Djinn.log_debug('Waiting for Datastore and Search2 to be active...')
+      break if HelperFunctions.is_port_open?(get_load_balancer.private_ip,
+                                             DatastoreServer::PROXY_PORT)
+      Djinn.log_debug('Waiting for Datastore to be active...')
       sleep(SMALL_WAIT)
     end
-    Djinn.log_info('Datastore and Search2 services are active.')
+    Djinn.log_info('Datastore service is active.')
+
+    if has_search2
+      # Wait till the Search2 is functional.
+      loop do
+        break if HelperFunctions.is_port_open?(get_load_balancer.private_ip,
+                                               Search2::PROXY_PORT)
+        Djinn.log_debug('Waiting for Search2 to be active...')
+        sleep(SMALL_WAIT)
+      end
+      Djinn.log_info('Search2 service is active.')
+    end
 
     # At this point all nodes are fully functional, so the Shadow will do
     # another assignments of the datastore and search2 processes
     # to ensure we got the accurate CPU count.
     assign_datastore_processes if my_node.is_shadow?
-    assign_search2_processes if my_node.is_shadow?
+    assign_search2_processes if my_node.is_shadow? and has_search2
   end
 
   def job_start(secret)
@@ -1884,7 +1896,7 @@ class Djinn
       end
       if my_node.is_load_balancer?
         update_db_haproxy
-        update_search2_haproxy
+        update_search2_haproxy if !get_search2.empty?
         APPS_LOCK.synchronize { regenerate_routing_config }
       end
       @state = "Done starting up AppScale, now in heartbeat mode"
@@ -2489,6 +2501,12 @@ class Djinn
 
     @state = "No load balancer nodes found."
     HelperFunctions.log_and_crash(@state, WAIT_TO_CRASH)
+  end
+
+  def get_search2
+    @state_change_lock.synchronize {
+      return @nodes.select { |node| node.is_search2? }
+    }
   end
 
   def valid_secret?(secret)
@@ -3420,7 +3438,7 @@ class Djinn
   def start_search2_role
     search_pth = "#{APPSCALE_HOME}/SearchService2"
     Djinn.log_debug('Ensuring Solr is configured and started.')
-    is_db = my_node.is_db_master? || my_node.is_db_slave
+    is_db = my_node.is_db_master? || my_node.is_db_slave?
     is_tq = my_node.is_taskqueue_master? || my_node.is_taskqueue_slave?
     heap_reduction = 0
     heap_reduction += 0.40 if is_db
@@ -3568,13 +3586,9 @@ class Djinn
 
     Djinn.log_info("Assigning search processes.")
     verbose = @options['verbose'].downcase == 'true'
-    search2_nodes = []
-    @state_change_lock.synchronize {
-      @nodes.each { |node| search2_nodes << node if node.is_search2? }
-    }
 
     # Assign the proper number of Search2 processes on each search2 machine.
-    search2_nodes.each { |node|
+    get_search2.each { |node|
       assignments = {}
       begin
         cpu_count = HermesClient.get_cpu_count(node.private_ip, @@secret)

@@ -44,6 +44,16 @@ TOTAL_MEM_KB=$(awk '/MemTotal/ { print $2 }' /proc/meminfo)
 SOLR_MEM_MB=$(echo "$TOTAL_MEM_KB $HEAP_REDUCTION" \
               | awk '{ printf "%d", $1 * (1 - $2) / 1024 / 2 }')
 
+echo "Ensuring ulimit properties are set for Solr"
+grep --quite "solr \+hard \+nofile \+65535" /etc/security/limits.conf \
+  || echo "solr hard nofile 65535" >> /etc/security/limits.conf
+grep --quite "solr \+soft \+nofile \+65535" /etc/security/limits.conf \
+  || echo "solr soft nofile 65535" >> /etc/security/limits.conf
+grep --quite "solr \+hard \+nproc \+65535" /etc/security/limits.conf \
+  || echo "solr hard nproc 65535" >> /etc/security/limits.conf
+grep --quite "solr \+soft \+nproc \+65535" /etc/security/limits.conf \
+  || echo "solr soft nproc 65535" >> /etc/security/limits.conf
+
 export SOLR_MEM="${SOLR_MEM_MB}m"
 export ZK_HOST
 export PRIVATE_IP
