@@ -26,14 +26,16 @@ do
 done
 ZK_HOST="${ZK_HOST}${SOLR_ZK_ROOT}"
 PRIVATE_IP=$(cat /etc/appscale/my_private_ip)
+solr_zk="${SOLR_EXTRACT_DIR}/solr/bin/solr zk"
 
-
-if ${SOLR_EXTRACT_DIR}/solr/bin/solr zk ls ${SOLR_ZK_ROOT} -z "${FIRST_ZK}"
+if ${solr_zk} ls ${SOLR_ZK_ROOT} -z "${FIRST_ZK}"
 then
     echo "Zookeeper root is already created."
 else
-    echo "Creating zookeeper root is created."
-    ${SOLR_EXTRACT_DIR}/solr/bin/solr zk mkroot ${SOLR_ZK_ROOT} -z "${FIRST_ZK}"
+    echo "Creating zookeeper root."
+    ${solr_zk} mkroot ${SOLR_ZK_ROOT} -z "${FIRST_ZK}" \
+      || ${solr_zk} ls ${SOLR_ZK_ROOT} -z "${FIRST_ZK}"
+    # We shouldn't fail if root was created after we entered to else clause.
 fi
 
 
@@ -45,13 +47,13 @@ SOLR_MEM_MB=$(echo "$TOTAL_MEM_KB $HEAP_REDUCTION" \
               | awk '{ printf "%d", $1 * (1 - $2) / 1024 / 2 }')
 
 echo "Ensuring ulimit properties are set for Solr"
-grep --quite "solr \+hard \+nofile \+65535" /etc/security/limits.conf \
+grep -q "solr \+hard \+nofile \+65535" /etc/security/limits.conf \
   || echo "solr hard nofile 65535" >> /etc/security/limits.conf
-grep --quite "solr \+soft \+nofile \+65535" /etc/security/limits.conf \
+grep -q "solr \+soft \+nofile \+65535" /etc/security/limits.conf \
   || echo "solr soft nofile 65535" >> /etc/security/limits.conf
-grep --quite "solr \+hard \+nproc \+65535" /etc/security/limits.conf \
+grep -q "solr \+hard \+nproc \+65535" /etc/security/limits.conf \
   || echo "solr hard nproc 65535" >> /etc/security/limits.conf
-grep --quite "solr \+soft \+nproc \+65535" /etc/security/limits.conf \
+grep -q "solr \+soft \+nproc \+65535" /etc/security/limits.conf \
   || echo "solr soft nproc 65535" >> /etc/security/limits.conf
 
 export SOLR_MEM="${SOLR_MEM_MB}m"

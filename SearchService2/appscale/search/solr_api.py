@@ -7,6 +7,7 @@ import itertools
 import json
 import logging
 import socket
+import time
 
 from appscale.search.models import SolrSearchResult
 
@@ -46,6 +47,7 @@ class SolrAPI(object):
   """
   A helper class for performing basic operations with Solr.
   """
+  CACHE_TTL = 600
 
   def __init__(self, zk_client, solr_zk_root, settings):
     """ Initializes SolrAPI object.
@@ -65,8 +67,13 @@ class SolrAPI(object):
     self._zk_client.ChildrenWatch(
       '{}/live_nodes'.format(self._solr_zk_root), self._update_live_nodes
     )
+    self._collections_cache = set()
+    self._broken_collections_cache = set()
+    self._cache_timestamp = 0.0
+
+    # Warm-up collections cache
     list_collections_sync = tornado_synchronous(self.list_collections)
-    self._collections_cache = list_collections_sync()
+    list_collections_sync()
 
   def _update_live_nodes(self, new_live_nodes):
     """ Updates information about Solr live nodes.
@@ -139,9 +146,13 @@ class SolrAPI(object):
       raise SolrIsNotReachable('Socket error ({})'.format(err))
     except httpclient.HTTPError as err:
       msg = u"Error during Solr call {url} ({err})".format(url=url, err=err)
-      if err.response.body.decode('utf-8'):
+      if err.response.body:
+        json_resp = json.loads(err.response.body.decode('utf-8'))
         try:
-          err_details = json.loads(err.response.body.decode('utf-8'))['error']['msg']
+          err_details = json_resp['error']['msg']
+          if 'no such collection' in err_details:
+            # Update collections cache in background
+            ioloop.IOLoop.current().spawn_callback(self.list_collections)
         except ValueError:
           err_details = err.response.body.decode('utf-8')
         msg += u"\nError details: {}".format(err_details)
@@ -168,16 +179,54 @@ class SolrAPI(object):
   @gen.coroutine
   def list_collections(self):
     """ Lists names of collections created in Solr.
+    Returned list can contain collection with missing core.
 
     Returns (asynchronously):
       A list of collection names present in Solr.
     """
     try:
-      response = yield self.get('/v2/collections')
-      raise gen.Return(json.loads(response.body.decode('utf-8'))['collections'])
-    except SolrError:
+      response = yield self.get('/solr/admin/collections',
+                                params={'action': 'CLUSTERSTATUS'})
+      response_data = json.loads(response.body.decode('utf-8'))
+      collections = response_data['cluster']['collections']
+      has_cores = []
+      has_no_cores = []
+      for collection_name, collection_status in collections.items():
+        shards = collection_status['shards'].values()
+        if any(shard['replicas'] for shard in shards):
+          has_cores.append(collection_name)
+        else:
+          has_no_cores.append(collection_name)
+      self._collections_cache = set(has_cores)
+      self._broken_collections_cache = set(has_no_cores)
+      self._cache_timestamp = time.time()
+      raise gen.Return(
+        (self._collections_cache, self._broken_collections_cache)
+      )
+    except (SolrError, KeyError):
       logger.exception('Failed to list collections')
       raise
+
+  @gen.coroutine
+  def does_collection_exist(self, collection):
+    # Check if collection is already known locally
+    if collection in self._collections_cache:
+      return True
+    if self._cache_timestamp + self.CACHE_TTL < time.time():
+      if collection in self._broken_collections_cache:
+        logger.warning('Collection "{}" seems to be in broken state'
+                       .format(collection))
+        return True
+
+    # Update local cache and check again
+    collections, broken_collections = yield self.list_collections()
+    if collection in collections:
+      return True
+    if collection in self._broken_collections_cache:
+      logger.warning('Collection "{}" seems to be in broken state'
+                     .format(collection))
+      return True
+    return False
 
   @gen.coroutine
   def ensure_collection(self, collection):
@@ -186,18 +235,13 @@ class SolrAPI(object):
     Args:
       collection: a str - name of collection to make sure is created.
     """
-    # Check if collection is already known locally
-    if collection in self._collections_cache:
-      return
-    # Update local cache and check again
-    self._collections_cache = yield self.list_collections()
-    if collection in self._collections_cache:
+    if (yield self.does_collection_exist(collection)):
       return
     # Create Solr collection
     try:
       # Collection creation in API v2 doesn't support collection.configName yet.
       # So using old API (/solr/...).
-      response = yield self.post(
+      response = yield self.get(
         '/solr/admin/collections',
         params={
           'action': 'CREATE',
@@ -207,17 +251,48 @@ class SolrAPI(object):
           'autoAddReplicas': True,
           'numShards': self._settings.shards_number,
           'maxShardsPerNode': self._settings.max_shards_per_node,
+          'waitForFinalState': True,
         }
       )
       logger.info('Successfully created collection {} ({})'
                   .format(collection, response.body))
-      self._collections_cache = yield self.list_collections()
     except SolrError as err:
       if 'collection already exists' in err.error_detail:
-        logger.warning('Collection {} already exists'.format(collection))
+        logger.info('Collection {} already exists'.format(collection))
+      elif 'Cannot create collection ' in err.error_detail:
+        logging.warning('Solr message: {}'.format(err.error_detail))
+        logging.warning('Scheduling deletion of collection {}'
+                        .format(collection))
+        ioloop.IOLoop.current().spawn_callback(
+          self.delete_collection, collection
+        )
+        raise
       else:
         logger.warning('Failed to create collection {}'.format(collection))
         raise
+    # Update collections cache in background
+    ioloop.IOLoop.current().spawn_callback(self.list_collections)
+
+  @gen.coroutine
+  def delete_collection(self, collection):
+    try:
+      response = yield self.get(
+        '/solr/admin/collections',
+        params={
+          'action': 'DELETE',
+          'name': collection
+        }
+      )
+      logger.info('Successfully deleted collection {} ({})'
+                  .format(collection, response.body))
+    except SolrError as err:
+      if 'Could not find collection' in err.error_detail:
+        logger.info('Collection {} does not exits'.format(collection))
+      else:
+        logger.warning('Failed to delete collection {}'.format(collection))
+        raise
+    # Update collections cache in background
+    ioloop.IOLoop.current().spawn_callback(self.list_collections)
 
   @gen.coroutine
   def get_schema_info(self, collection):
