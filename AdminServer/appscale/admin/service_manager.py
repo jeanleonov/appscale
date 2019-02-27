@@ -103,11 +103,31 @@ def pids_in_slice(slice_name):
 
 
 class Service(object):
+  """
+  A container for service specific properties
+  and functions to use in ServerManager.
+  """
   def __init__(self, type_, slice_, start_cmd_matcher, start_cmd_builder,
                health_probe, min_port, max_port,
                start_timeout=30, status_timeout=10, stop_timeout=5,
                monit_name_fmt='{type}_server-{port}',
                log_filename_fmt='{type}_server-{port}.log'):
+    """ Initializes instance of Service.
+
+    Args:
+      type_: A str - name of cgroup slice to use for the service.
+      slice_: A str - name of cgroup slice to use for the service.
+      start_cmd_matcher: A func getting cmd args list and returning port.
+      start_cmd_builder: A func building args from port and assignment options.
+      health_probe: A func getting port and returning True if server is healthy.
+      min_port: An int - minimal port to use for the service.
+      max_port: An int - maximal port to use for the service.
+      start_timeout: An int - max time to wait for server to start (in seconds).
+      status_timeout: An int - max time to wait for server status (in seconds).
+      stop_timeout: An int - max time to wait for server to stop (in seconds).
+      monit_name_fmt: A format str containing 'type' and 'port' keywords.
+      log_filename_fmt: A format str containing 'type' and 'port' keywords.
+    """
     self.type = type_
     self.slice = slice_
     self.port_from_start_cmd = start_cmd_matcher
@@ -122,9 +142,23 @@ class Service(object):
     self._log_filename_fmt = log_filename_fmt
 
   def monit_name(self, port):
+    """ Renders a monit name to use in Hermes stats.
+
+    Args:
+      port: An int - port where server is listening on.
+    Returns:
+      A string representing name to use in Hermes as monit name.
+    """
     return self._monit_name_fmt.format(type=self.type, port=port)
 
   def log_filename(self, port):
+    """ Renders a filename to use for logs.
+
+    Args:
+      port: An int - port where server is listening on.
+    Returns:
+      A string representing filename (not a full path, just name).
+    """
     return self._log_filename_fmt.format(type=self.type, port=port)
 
 
@@ -133,13 +167,29 @@ class Service(object):
 # -----------------------------
 
 def port_from_datastore_start_cmd(args):
+  """ Extracts appscale-datastore server port from command line arguments.
+
+  Args:
+    args: A list representing command line arguments of server process.
+  Returns:
+    An integer representing port where server is listening on.
+  Raises:
+    ValueError if args doesn't correspond to appscale-datastore.
+  """
   if len(args) < 2 or not args[1].endswith('appscale-datastore'):
     raise ValueError('Not a datastore start command')
   return int(args[args.index('--port') + 1])
 
 
 def datastore_start_cmd(port, assignment_options):
-  """ Starts a new datastore server. """
+  """ Prepares command line arguments for starts a new datastore server.
+
+  Args:
+    port: An int - tcp port to start datastore server on.
+    assignment_options: A dict containing assignment options from ZK.
+  Returns:
+    A list of command line arguments.
+  """
   start_cmd = ['appscale-datastore',
                '--type', 'cassandra',
                '--port', str(port)]
@@ -150,6 +200,13 @@ def datastore_start_cmd(port, assignment_options):
 
 @gen.coroutine
 def datastore_health_probe(host_port):
+  """ Verifies if datastore server is responsive.
+
+  Args:
+    host_port: A str - location of datastore server to test.
+  Returns:
+    True if the serve is responsive and False otherwise.
+  """
   http_client = AsyncHTTPClient()
   try:
     response = yield http_client.fetch('http://{}'.format(host_port))
@@ -157,7 +214,7 @@ def datastore_health_probe(host_port):
   except socket.error as error:
     if error.errno != errno.ECONNREFUSED:
       raise
-
+    raise gen.Return(False)
 
 
 datastore_service = Service(
@@ -176,6 +233,15 @@ datastore_service = Service(
 # --------------------------
 
 def port_from_search_start_cmd(args):
+  """ Extracts appscale-search server port from command line arguments.
+
+  Args:
+    args: A list representing command line arguments of server process.
+  Returns:
+    An integer representing port where server is listening on.
+  Raises:
+    ValueError if args doesn't correspond to appscale-search.
+  """
   search_executable = '/opt/appscale_search2_server/bin/appscale-search2'
   if len(args) < 2 or not args[1].endswith(search_executable):
     raise ValueError('Not a search start command')
@@ -183,6 +249,14 @@ def port_from_search_start_cmd(args):
 
 
 def search_start_cmd(port, assignment_options):
+  """ Prepares command line arguments for starts a new search server.
+
+  Args:
+    port: An int - tcp port to start search server on.
+    assignment_options: A dict containing assignment options from ZK.
+  Returns:
+    A list of command line arguments.
+  """
   start_cmd = ['/opt/appscale_search2_server/bin/appscale-search2',
                '--zk-locations'] + options.zk_locations + [
                '--host', options.private_ip,
@@ -194,6 +268,15 @@ def search_start_cmd(port, assignment_options):
 
 @gen.coroutine
 def search_health_probe(host_port):
+  """ Verifies if search server is responsive.
+  It also writes warning to logs if the server is responsive
+  but reported issues with connection to ZooKeeper or Solr.
+
+  Args:
+    host_port: A str - location of search server to test.
+  Returns:
+    True if the serve is responsive and False otherwise.
+  """
   http_client = AsyncHTTPClient()
   try:
     response = yield http_client.fetch('http://{}/_health'.format(host_port))
@@ -210,6 +293,7 @@ def search_health_probe(host_port):
   except socket.error as error:
     if error.errno != errno.ECONNREFUSED:
       raise
+    raise gen.Return(False)
 
 
 search_service = Service(
@@ -230,11 +314,14 @@ class ServerManager(object):
 
   def __init__(self, service, port, assignment_options=None, start_cmd=None):
     """ Creates a new Server.
+    It accepts either assignment_options argument (to build start_cmd)
+    or start_cmd of existing process.
 
     Args:
-      service: An instance of ServiceProperties.
+      service: An instance of Service.
       port: An integer specifying the port to use.
       assignment_options: A dict representing assignment options from zookeeper.
+      start_cmd: A list of command line arguments used for starting server.
     """
     self.service = service
     self.failure = None
@@ -262,11 +349,11 @@ class ServerManager(object):
 
   @staticmethod
   def from_pid(pid, service):
-    """ Creates a new DatastoreServer from an existing process.
+    """ Creates a new ServerManager from an existing process.
 
     Args:
       pid: An integers specifying a process ID.
-      service
+      service: An instance of Service.
     """
     process = psutil.Process(pid)
     args = process.cmdline()
@@ -287,7 +374,7 @@ class ServerManager(object):
 
   @gen.coroutine
   def start(self):
-    """ Starts a new datastore server. """
+    """ Starts a new server process. """
     with (yield self._management_lock.acquire()):
       if self.state == ServerStates.RUNNING:
         return
@@ -317,7 +404,7 @@ class ServerManager(object):
 
   @gen.coroutine
   def stop(self):
-    """ Stops an existing datastore server. """
+    """ Stops an existing server process. """
     with (yield self._management_lock.acquire()):
       if self.state == ServerStates.STOPPED:
         return
@@ -388,12 +475,12 @@ class ServerManager(object):
       raise
 
   def __repr__(self):
-    """ Represents the service details.
+    """ Represents the server details.
 
     Returns:
-      A string representing the service.
+      A string representing the server.
     """
-    return '<Service: {}:{}, {}>'.format(self.type, self.port, self.state)
+    return '<Server: {}:{}, {}>'.format(self.type, self.port, self.state)
 
 
 class ServiceManager(object):
@@ -527,7 +614,8 @@ class ServiceManager(object):
 
     Args:
       service_type: A string specifying the service type.
-      assignment_options: A dictionary specifying options to use when starting servers.
+      assignment_options: A dictionary specifying options
+                          to use when starting servers.
     """
     scheduled = [server for server in self.state
                  if server.type == service_type and
