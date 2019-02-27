@@ -19,7 +19,8 @@ from appscale.search.constants import (
   InvalidRequest, UnknownFieldTypeException,
   UnknownFacetTypeException
 )
-from appscale.search.models import Field, Document, Facet
+from appscale.search.models import Field, Document, Facet, FacetRefinement, \
+  FacetRequest
 from appscale.search.protocols import search_pb2
 
 logger = logging.getLogger(__name__)
@@ -143,7 +144,7 @@ class APIMethods(object):
       search_response: A search_pb2.SearchResponse.
     """
     app_id = search_request.app_id.decode('utf-8')
-    # Extract params
+    # Extract basic search params
     params = search_request.params
     query = params.query
     projection_fields = params.field_spec.name
@@ -159,12 +160,28 @@ class APIMethods(object):
     cursor = params.cursor or None
     keys_only = params.keys_only
 
+    # Extract facets-specific params
+    auto_discover_facet_count = params.auto_discover_facet_count
+    facet_requests = [
+      _from_pb_facet_request(pb_facet_request)
+      for pb_facet_request in params.include_facet
+    ]
+    facet_refinements = [
+      _from_pb_facet_refinement(pb_facet_refinement)
+      for pb_facet_refinement in params.facet_refinement
+    ]
+    facet_auto_detect_limit = params.facet_auto_detect_param.value_limit
+    # facet_depth = params.facet_depth  # Ignoring facet_depth
+
     # Select documents using Solr
     search_result = yield self.solr_adapter.query(
       app_id=app_id, namespace=namespace, index_name=index_name,
       query=query, projection_fields=projection_fields,
       sort_expressions=sort_fields, limit=limit, offset=offset,
-      cursor=cursor, keys_only=keys_only
+      cursor=cursor, keys_only=keys_only,
+      auto_discover_facet_count=auto_discover_facet_count,
+      facet_requests=facet_requests, facet_refinements=facet_refinements,
+      facet_auto_detect_limit=facet_auto_detect_limit,
     )
     _fill_search_response(search_response, search_result)
 
@@ -180,10 +197,9 @@ def _fill_search_response(pb_response, search_result):
   pb_response.status.code = search_pb2.SearchServiceError.OK
   if search_result.cursor:
     pb_response.cursor = search_result.cursor
-  if search_result.facets:
-    # TODO
-    facet_results = [search_pb2.FacetResult() for facet in search_result.facets]
-    pb_response.facet.extend(facet_results)
+  for facet_result in search_result.facet_results:
+    new_facet = pb_response.facet_result.add()
+    _fill_pb_facet_result(new_facet, facet_result)
   for doc in search_result.scored_documents:
     new_result = pb_response.result.add()
     # new_result.score.extend([<SCORES ACCORDING TO SORT>])
@@ -234,6 +250,21 @@ def _fill_pb_document(pb_document, doc):
       raise UnknownFieldTypeException(
         "A document contains a field of unknown type: {}"
         .format(field.type)
+      )
+
+  for facet in doc.facets:
+    new_facet = pb_document.facet.add()
+    new_facet.name = facet.name
+    if facet.type == Facet.Type.ATOM:
+      new_facet.value.type = search_pb2.FacetValue.ATOM
+      new_facet.value.string_value = facet.value
+    elif facet.type == Facet.Type.NUMBER:
+      new_facet.value.type = search_pb2.FacetValue.NUMBER
+      new_facet.value.string_value = str(facet.value)
+    else:
+      raise UnknownFacetTypeException(
+        "A document contains a facet of unknown type: {}"
+        .format(facet.type)
       )
 
 
@@ -309,4 +340,47 @@ def _from_pb_document(pb_document):
     facets=facets,
     language=pb_document.language,
     rank=pb_document.order_id or int(time.time())
+  )
+
+
+def _fill_pb_facet_result(pb_facet_result, facet_result):
+  pb_facet_result.name = facet_result.name
+  for value, count in facet_result.values:
+    new_value = pb_facet_result.value.add()
+    new_value.name = value
+    new_value.count = count
+    new_value.refinement.name = facet_result.name
+    new_value.refinement.value = value
+  for start, end, count in facet_result.ranges:
+    new_value = pb_facet_result.value.add()
+    new_value.name = '[{}, {})'.format(start if start is not None else '*',
+                                       end if end is not None else '*')
+    new_value.count = count
+    new_value.refinement.name = facet_result.name
+    new_value.refinement.range.start = str(start)
+    new_value.refinement.range.end = str(end)
+
+
+def _from_pb_facet_request(pb_facet_request):
+  params = pb_facet_request.params
+  return FacetRequest(
+    name=pb_facet_request.name,
+    value_limit=params.value_limit,
+    values=list(params.value_constraint),
+    ranges=[
+      (int(range_.start) if range_.start else None,
+       int(range_.end) if range_.end else None)
+      for range_ in params.range
+    ],
+  )
+
+
+def _from_pb_facet_refinement(pb_facet_refinement):
+  range_ = pb_facet_refinement.range
+  if not range_.start and not range_.end:
+    range_ = None
+  return FacetRefinement(
+    name=pb_facet_refinement.name,
+    value=pb_facet_refinement.value or None,
+    range=(range_.start, range_.end) if range_ else None
   )

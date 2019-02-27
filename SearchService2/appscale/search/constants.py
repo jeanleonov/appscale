@@ -4,7 +4,7 @@ from appscale.search.protocols import search_pb2
 SOLR_TIMEOUT = 60
 
 # Max amount of time to wait before commit updates (in milliseconds).
-SOLR_COMMIT_WITHIN = 300
+SOLR_COMMIT_WITHIN = 0
 
 # Name of Solr configs set for appscale collections.
 APPSCALE_CONFIG_SET_NAME = 'appscale_search_api_config'

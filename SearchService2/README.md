@@ -23,7 +23,7 @@ A server that handles Search API requests from GAE application.
 
 ### Known issues
 
- - HTML field type is analysed as a regular text.
+ - HTML field type is not supported.
  - The service doesn't support geo queries. Query grammar, parser and converter
    need to be updated, but all needed data is already properly indexed to Solr.
  - Search query `foo bar` won't search atom fields for `"foo bar"`, but will
@@ -34,16 +34,8 @@ A server that handles Search API requests from GAE application.
    to build own text analyser which would behave more closely to GAE.
  - Sort expressions are not fully implemented yet.
  - Field expressions are not implemented yet.
- - Facets are not fully implemented yet.
  - `_rank` in query should be interpreted as a reference to `rank` of document.
- - `appscale.search.query_parser.parser.parse_query(query_str)` doesn't raise
-   representative or even any exception when `query_str` doesn't match grammar.
  - It doesn't seem that we can easily implement document scores in results.
  - We need to get rid of Remote API layer. Application id and search method
    can be part of url. In this case appscale_search_stub needs to be updated.
  
-
-  // TODO facets:
-  //   atom values should be saved to *_atom_facet_value
-  //   lowercased value should be saved to *_atom_facet   
-

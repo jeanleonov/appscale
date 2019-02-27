@@ -3,7 +3,8 @@ Code for turning a GAE Search query into a SOLR query.
 """
 import logging
 
-from appscale.search.models import Field, SolrQueryOptions
+from appscale.search.constants import InvalidRequest
+from appscale.search.models import SolrQueryOptions, SolrSchemaFieldInfo
 from appscale.search.query_parser import parser
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,9 @@ def prepare_solr_query(gae_query, fields, grouped_fields):
   """
   converter = _QueryConverter(gae_query, fields, grouped_fields)
   return converter.solr_query()
+
+
+_SOLR_TYPE = SolrSchemaFieldInfo.Type
 
 
 class _QueryConverter(object):
@@ -84,7 +88,7 @@ class _QueryConverter(object):
     # Find all fields which need to be queried for global search
     query_fields = []
     if self.has_string_values:
-      string_types = [Field.Type.ATOM, Field.Type.TEXT, Field.Type.HTML]
+      string_types = [_SOLR_TYPE.ATOM_FIELD, _SOLR_TYPE.TEXT_FIELD]
       query_fields += [
         schema_field.solr_name for schema_field in self.schema_fields
         if schema_field.type in string_types
@@ -92,20 +96,19 @@ class _QueryConverter(object):
     if self.has_date_values:
       query_fields += [
         schema_field.solr_name for schema_field in self.schema_fields
-        if schema_field.type == Field.Type.DATE
+        if schema_field.type == _SOLR_TYPE.DATE_FIELD
       ]
     if self.has_number_values:
       query_fields += [
         schema_field.solr_name for schema_field in self.schema_fields
-        if schema_field.type == Field.Type.NUMBER
+        if schema_field.type == _SOLR_TYPE.NUMBER_FIELD
       ]
 
-    solr_query_options = SolrQueryOptions(
+    return SolrQueryOptions(
       query_string=solr_query,
       query_fields=query_fields,
       def_type='edismax'
     )
-    return solr_query_options
 
   def _render_exprs(self, expr_or_exprs_group):
     """ Renders an Expression or ExpressionsGroup.
@@ -168,7 +171,7 @@ class _QueryConverter(object):
       # Expr should match any of available field types for GAE field name.
       schema_fields = self.grouped_schema_fields[expr.field_name]
     except KeyError:
-      raise self.NotApplicableValue()
+      raise InvalidRequest('Unknown field "{}"'.format(expr.field_name))
 
     return self._render_unary_exprs(schema_fields, expr.operator, expr.value)
 
@@ -247,19 +250,19 @@ class _QueryConverter(object):
     statements = []
     for schema_field in schema_fields:
       # Skip if value is not applicable for field type.
-      if schema_field.type in [Field.Type.TEXT, Field.Type.HTML]:
+      if schema_field.type == _SOLR_TYPE.TEXT_FIELD:
         if operator != parser.EQUALS:
           # Can't compare using > < >= <=
           continue
-      elif schema_field.type == Field.Type.ATOM:
+      elif schema_field.type == _SOLR_TYPE.ATOM_FIELD:
         if operator != parser.EQUALS or value.stem:
           # Can't stem atom field or compare using > < >= <=
           continue
-      elif schema_field.type == Field.Type.NUMBER:
+      elif schema_field.type == _SOLR_TYPE.NUMBER_FIELD:
         if not value.has_number_value or value.stem:
           # Can't search text against number field
           continue
-      elif schema_field.type == Field.Type.DATE:
+      elif schema_field.type == _SOLR_TYPE.DATE_FIELD:
         if not value.has_date_value or value.stem:
           # Can't search text against date field
           continue
