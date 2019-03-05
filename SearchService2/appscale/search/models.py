@@ -18,8 +18,6 @@ Google documentations can be helpful
 if you have any questions regarding Search API objects:
   https://cloud.google.com/appengine/docs/standard/python/search/documentclass
 """
-import collections
-
 import attr
 
 
@@ -121,7 +119,6 @@ class SolrIndexSchemaInfo(object):
   fields = attr.ib()
   facets = attr.ib()
   grouped_fields = attr.ib()
-  grouped_facet_values = attr.ib()
   grouped_facet_indexes = attr.ib()
 
 
@@ -133,8 +130,10 @@ class SolrSchemaFieldInfo(object):
     # HTML_FIELD =  TODO: define HTML field type in Solr
     ATOM_FIELD = "atom"
     NUMBER_FIELD = "number"
-    DATE_FIELD = "date"
+    DATE_FIELD = "date"          # Date range for search queries
+    DATE_MS_FIELD = "date_ms"    # Corresponding timestamp for sorting
     GEO_FIELD = "geo"
+
     # GAE Facet types:
     ATOM_FACET_INDEX = "atom_facet"    # Lowercased facet value in Solr
     ATOM_FACET = "atom_facet_value"    # Original facet value in Solr

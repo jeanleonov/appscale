@@ -88,10 +88,12 @@ class _QueryConverter(object):
     # Find all fields which need to be queried for global search
     query_fields = []
     if self.has_string_values:
-      string_types = [_SOLR_TYPE.ATOM_FIELD, _SOLR_TYPE.TEXT_FIELD]
       query_fields += [
         schema_field.solr_name for schema_field in self.schema_fields
-        if schema_field.type in string_types
+        if (
+            schema_field.type == _SOLR_TYPE.ATOM_FIELD
+            or schema_field.type == _SOLR_TYPE.TEXT_FIELD
+        )
       ]
     if self.has_date_values:
       query_fields += [
@@ -171,7 +173,9 @@ class _QueryConverter(object):
       # Expr should match any of available field types for GAE field name.
       schema_fields = self.grouped_schema_fields[expr.field_name]
     except KeyError:
-      raise InvalidRequest('Unknown field "{}"'.format(expr.field_name))
+      logger.warning('Unknown field "{}" in query string'
+                     .format(expr.field_name))
+      raise self.NotApplicableValue()
 
     return self._render_unary_exprs(schema_fields, expr.operator, expr.value)
 
@@ -266,8 +270,10 @@ class _QueryConverter(object):
         if not value.has_date_value or value.stem:
           # Can't search text against date field
           continue
-      else:  # schema_field.type == Field.Type.GEO:
+      elif schema_field.type == _SOLR_TYPE.GEO_FIELD:
         logger.warning('Geo location queries are not supported yet.')
+        continue
+      else:  # schema_field.type is not queryable
         continue
       rendered = self._render_field_operator_value(
         schema_field, operator, right_hand
