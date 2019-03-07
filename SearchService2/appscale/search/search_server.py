@@ -10,6 +10,7 @@ request to proper method of APIMethods.
 import argparse
 import json
 import logging
+import time
 
 from kazoo.client import KazooClient
 from kazoo.exceptions import NodeExistsError
@@ -20,8 +21,9 @@ from appscale.common.async_retrying import retry_data_watch_coroutine
 from appscale.common.constants import LOG_FORMAT, ZK_PERSISTENT_RECONNECTS
 from tornado import ioloop, web
 
-from appscale.search import api_methods
-from appscale.search.constants import SearchServiceError, SEARCH_SERVERS_NODE
+from appscale.search import api_methods, solr_adapter
+from appscale.search.constants import SearchServiceError, SEARCH_SERVERS_NODE, \
+  SolrServerError
 from appscale.search.protocols import search_pb2, remote_api_pb2
 
 logger = logging.getLogger(__name__)
@@ -238,5 +240,109 @@ def main():
 
   # Make sure /appscale/search/servers/<IP>:<PORT> exists while server is alive.
   register_search_server(zk_client, args.host, args.port)
+
+  io_loop.start()
+
+
+def reindex():
+  """ Reindex all documents in collection. """
+  logging.basicConfig(format=LOG_FORMAT, level=logging.INFO)
+
+  parser = argparse.ArgumentParser()
+  parser.add_argument(
+    '-v', '--verbose', action='store_true',
+    help='Output debug-level logging')
+  parser.add_argument(
+    '--project', help='The name of GAE project')
+  parser.add_argument(
+    '--namespace', default='', help='The name of GAE namespace')
+  parser.add_argument(
+    '--index', help='The name of GAE Search index')
+  parser.add_argument(
+    '--zk-locations', nargs='+', help='ZooKeeper location(s)')
+  args = parser.parse_args()
+
+  if args.verbose:
+    logging.getLogger('appscale').setLevel(logging.DEBUG)
+
+  zk_client = KazooClient(
+    hosts=','.join(args.zk_locations),
+    connection_retry=ZK_PERSISTENT_RECONNECTS
+  )
+  zk_client.start()
+
+  async def reindex_documents():
+    logger.info('Reindexing documents from {}|{}|{}'
+                .format(args.project, args.namespace, args.index))
+    adapter = solr_adapter.SolrAdapter(zk_client)
+    has_more = True
+    start_doc_id = None
+    total = 0
+    while has_more:
+      try:
+        documents = await adapter.list_documents(
+          args.project, args.namespace, args.index, start_doc_id=start_doc_id,
+          include_start_doc=False, limit=100, keys_only=False
+        )
+        logger.info('Retrieved {} documents starting from doc_id "{}"'
+                    .format(len(documents), start_doc_id))
+        if documents:
+          await adapter.index_documents(
+            args.project, args.namespace, args.index, documents
+          )
+          total += len(documents)
+          logger.info('Indexed {} documents starting from doc_id "{}"'
+                      .format(len(documents), start_doc_id))
+          start_doc_id = documents[-1].doc_id
+        else:
+          has_more = False
+      except SolrServerError as err:
+        logger.exception(err)
+        logger.info("Retrying in 1 second")
+        time.sleep(1)
+        continue
+
+    logger.info('Successfully reindexed {} documents'.format(total))
+    io_loop.stop()
+    io_loop.close()
+
+  io_loop = ioloop.IOLoop.current()
+  io_loop.spawn_callback(reindex_documents)
+
+  io_loop.start()
+
+
+def collections():
+  """ List all Solr collections. """
+  logging.basicConfig(format=LOG_FORMAT, level=logging.INFO)
+
+  parser = argparse.ArgumentParser()
+  parser.add_argument(
+    '-v', '--verbose', action='store_true',
+    help='Output debug-level logging')
+  parser.add_argument(
+    '--zk-locations', nargs='+', help='ZooKeeper location(s)')
+  args = parser.parse_args()
+
+  if args.verbose:
+    logging.getLogger('appscale').setLevel(logging.DEBUG)
+
+  zk_client = KazooClient(
+    hosts=','.join(args.zk_locations),
+    connection_retry=ZK_PERSISTENT_RECONNECTS
+  )
+  zk_client.start()
+
+  async def list_collections():
+    adapter = solr_adapter.SolrAdapter(zk_client)
+    collections, broken = await adapter.solr.list_collections()
+    logger.info('Collections:\n    {}'.format('\n    '.join(collections)))
+    if broken:
+      logger.warning('Broken collections:\n    {}'.format('\n    '.join(broken)))
+    io_loop.stop()
+    io_loop.close()
+
+  io_loop = ioloop.IOLoop.current()
+  io_loop.spawn_callback(list_collections)
 
   io_loop.start()
