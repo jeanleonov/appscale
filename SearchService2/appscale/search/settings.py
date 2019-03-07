@@ -1,10 +1,7 @@
 import json
 import logging
 
-from appscale.common import appscale_info
-from appscale.search.constants import (
-  SERVICE_SETTINGS_NODE, MissingServiceSetting
-)
+from appscale.search.constants import SERVICE_SETTINGS_NODE
 
 logger = logging.getLogger(__name__)
 

@@ -11,8 +11,6 @@ import re
 import time
 from datetime import datetime
 
-from tornado import gen
-
 from appscale.search import query_converter, facet_converter
 from appscale.search.constants import (
   SOLR_ZK_ROOT, SUPPORTED_LANGUAGES, UnknownFieldTypeException,
@@ -48,8 +46,7 @@ class SolrAdapter(object):
     self._settings = SearchServiceSettings(zk_client)
     self.solr = SolrAPI(zk_client, SOLR_ZK_ROOT, self._settings)
 
-  @gen.coroutine
-  def index_documents(self, app_id, namespace, index_name, documents):
+  async def index_documents(self, app_id, namespace, index_name, documents):
     """ Puts specified documents into the index (asynchronously).
 
     Args:
@@ -60,10 +57,9 @@ class SolrAdapter(object):
     """
     collection = get_collection_name(app_id, namespace, index_name)
     solr_documents = [_to_solr_document(doc) for doc in documents]
-    yield self.solr.put_documents(collection, solr_documents)
+    await self.solr.put_documents(collection, solr_documents)
 
-  @gen.coroutine
-  def delete_documents(self, app_id, namespace, index_name, ids):
+  async def delete_documents(self, app_id, namespace, index_name, ids):
     """ Deletes documents with specified IDs from the index (asynchronously).
 
     Args:
@@ -73,11 +69,10 @@ class SolrAdapter(object):
       ids: a list of document IDs to delete.
     """
     collection = get_collection_name(app_id, namespace, index_name)
-    yield self.solr.delete_documents(collection, ids)
+    await self.solr.delete_documents(collection, ids)
 
-  @gen.coroutine
-  def list_documents(self, app_id, namespace, index_name, start_doc_id,
-                     include_start_doc, limit, keys_only):
+  async def list_documents(self, app_id, namespace, index_name, start_doc_id,
+                           include_start_doc, limit, keys_only):
     """ Retrieves up to limit documents starting from start_doc_id
     and converts it from Solr format to unified Search API documents.
 
@@ -109,19 +104,18 @@ class SolrAdapter(object):
       solr_projection_fields = ['id']
 
     # Use *:* to match any document
-    solr_search_result = yield self.solr.query_documents(
+    solr_search_result = await self.solr.query_documents(
       collection=collection, query='*:*', filter_=solr_filter_query,
       limit=limit, fields=solr_projection_fields, sort=solr_sort_fields
     )
     docs = [_from_solr_document(solr_doc)
             for solr_doc in solr_search_result.documents]
-    raise gen.Return(docs)
+    return docs
 
-  @gen.coroutine
-  def query(self, app_id, namespace, index_name, query, projection_fields,
-            sort_expressions, limit, offset, cursor, keys_only,
-            auto_discover_facet_count, facet_requests,  facet_refinements,
-            facet_auto_detect_limit):
+  async def query(self, app_id, namespace, index_name, query, projection_fields,
+                  sort_expressions, limit, offset, cursor, keys_only,
+                  auto_discover_facet_count, facet_requests,  facet_refinements,
+                  facet_auto_detect_limit):
     """ Retrieves documents which matches query from Solr collection
     and converts it to unified documents.
 
@@ -143,7 +137,7 @@ class SolrAdapter(object):
     Returns (asynchronously):
       An instance of models.SearchResult.
     """
-    index_schema = yield self._get_schema_info(app_id, namespace, index_name)
+    index_schema = await self._get_schema_info(app_id, namespace, index_name)
     # Convert Search API query to Solr query with a list of fields to search.
     query_options = query_converter.prepare_solr_query(
       query, index_schema.fields, index_schema.grouped_fields
@@ -163,14 +157,14 @@ class SolrAdapter(object):
       refinement_filter = facet_converter.generate_refinement_filter(
         index_schema.grouped_facet_indexes, facet_refinements
       )
-    facet_items, stats_items = yield self._convert_facet_args(
+    facet_items, stats_items = await self._convert_facet_args(
       auto_discover_facet_count, facet_auto_detect_limit, facet_requests,
       index_schema, query_options, refinement_filter
     )
     stats_fields = [stats_line for solr_field, stats_line in stats_items]
 
     # DO ACTUAL QUERY:
-    solr_result = yield self.solr.query_documents(
+    solr_result = await self.solr.query_documents(
       collection=index_schema.collection,
       query=query_options.query_string, offset=offset, limit=limit,
       cursor=cursor, fields=solr_projection_fields, sort=solr_sort_fields,
@@ -195,7 +189,7 @@ class SolrAdapter(object):
       num_found=solr_result.num_found, scored_documents=docs,
       cursor=cursor, facet_results=facet_results
     )
-    raise gen.Return(result)
+    return result
 
   @staticmethod
   def _convert_projection(keys_only, gae_projection_fields, index_schema):
@@ -327,8 +321,7 @@ class SolrAdapter(object):
       stats_items += explicit_stats_items
     return facet_items, stats_items
 
-  @gen.coroutine
-  def _get_schema_info(self, app_id, namespace, gae_index_name):
+  async def _get_schema_info(self, app_id, namespace, gae_index_name):
     """ Retrieves information about schema of Solr collection
     corresponding to Search API index.
 
@@ -340,7 +333,7 @@ class SolrAdapter(object):
       An instance of SolrIndexSchemaInfo.
     """
     collection = get_collection_name(app_id, namespace, gae_index_name)
-    solr_schema_info = yield self.solr.get_schema_info(collection)
+    solr_schema_info = await self.solr.get_schema_info(collection)
     fields_info = solr_schema_info['fields']
     id_field = SolrSchemaFieldInfo(
       solr_name='id', gae_name='doc_id', type=Field.Type.ATOM,
@@ -364,8 +357,7 @@ class SolrAdapter(object):
       except ValueError:
         continue
       schema_field = SolrSchemaFieldInfo(
-        solr_name=solr_field_name, gae_name=gae_name, type=type_,
-        language=language, docs_number=info.get('docs', 0)
+        solr_field_name, gae_name, type_, language, info.get('docs', 0)
       )
       if SolrSchemaFieldInfo.Type.is_facet_index(type_):
         add_value(grouped_facet_indexes, gae_name, schema_field)
@@ -388,7 +380,7 @@ class SolrAdapter(object):
         facets_group.sort(key=lambda solr_field: -solr_field.docs_number)
 
     index_info = solr_schema_info['index']
-    raise gen.Return(SolrIndexSchemaInfo(
+    return SolrIndexSchemaInfo(
       app_id=app_id,
       namespace=namespace,
       gae_index_name=gae_index_name,
@@ -400,7 +392,7 @@ class SolrAdapter(object):
       facets=facets,
       grouped_fields=grouped_fields,
       grouped_facet_indexes=grouped_facet_indexes
-    ))
+    )
 
   async def _get_facets_stats(self, index_schema, query_options,
                               refinement_filter):
@@ -562,12 +554,12 @@ def _from_solr_document(solr_doc):
     if SolrSchemaFieldInfo.Type.is_facet(solr_type_):
       # Add facet for each value
       for value in values:
-        facet = Facet(type=gae_type, name=name, value=value)
+        facet = Facet(gae_type, name, value)
         facets.append(facet)
     else:
       # Add field for each value
       for value in values:
-        field = Field(type=gae_type, name=name, value=value, language=language)
+        field = Field(gae_type, name, value, language)
         fields.append(field)
 
   return ScoredDocument(

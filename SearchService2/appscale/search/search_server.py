@@ -18,7 +18,7 @@ from tornado.ioloop import IOLoop
 
 from appscale.common.async_retrying import retry_data_watch_coroutine
 from appscale.common.constants import LOG_FORMAT, ZK_PERSISTENT_RECONNECTS
-from tornado import ioloop, web, gen
+from tornado import ioloop, web
 
 from appscale.search import api_methods
 from appscale.search.constants import SearchServiceError, SEARCH_SERVERS_NODE
@@ -33,8 +33,7 @@ class ProtobufferAPIHandler(web.RequestHandler):
   def initialize(self, api):
     self.api = api
 
-  @gen.coroutine
-  def post(self):
+  async def post(self):
     """ Function which handles POST requests. Data of the request is the
     request from the AppServer in an encoded protocol buffer format. """
     http_request_data = self.request.body
@@ -62,7 +61,7 @@ class ProtobufferAPIHandler(web.RequestHandler):
       search_api_method = remote_api_request.method
       search_api_request_data = remote_api_request.request
       logger.debug('Handling SearchAPI.{} request..'.format(search_api_method))
-      search_api_response = yield self.handle_search_api_request(
+      search_api_response = await self.handle_search_api_request(
         app_id, search_api_method, search_api_request_data
       )
 
@@ -89,9 +88,8 @@ class ProtobufferAPIHandler(web.RequestHandler):
     # Write encoded Remote API response
     self.write(remote_api_response.SerializeToString())
 
-  @gen.coroutine
-  def handle_search_api_request(self, app_id, search_api_method,
-                                search_api_req_data):
+  async def handle_search_api_request(self, app_id, search_api_method,
+                                      search_api_req_data):
     """ Handles Search API request.
 
     Args:
@@ -113,8 +111,8 @@ class ProtobufferAPIHandler(web.RequestHandler):
     if not search_api_req.app_id:
       search_api_req.app_id = app_id
     search_api_resp = resp_class()
-    yield executor(search_api_req, search_api_resp)
-    raise gen.Return(search_api_resp)
+    await executor(search_api_req, search_api_resp)
+    return search_api_resp
 
 
 class HealthRequestHandler(web.RequestHandler):

@@ -110,7 +110,3 @@ class UnknownFacetTypeException(InternalError):
 
 class ParsingError(ValueError):
   """ Search query parsing failed """
-
-
-class MissingServiceSetting(InternalError):
-  """ One of search service settings is missing in Zookeeper """

@@ -12,8 +12,6 @@ import time
 import uuid
 from datetime import datetime
 
-from tornado import gen
-
 from appscale.search import solr_adapter
 from appscale.search.constants import (
   InvalidRequest, UnknownFieldTypeException,
@@ -44,8 +42,7 @@ class APIMethods(object):
     """
     self.solr_adapter = solr_adapter.SolrAdapter(zk_client)
 
-  @gen.coroutine
-  def index_document(self, index_doc_request, index_doc_response):
+  async def index_document(self, index_doc_request, index_doc_response):
     """ Indexes/updates documents.
 
     Args:
@@ -65,7 +62,7 @@ class APIMethods(object):
         pb_doc.id = str(uuid.uuid4())
 
     documents = [_from_pb_document(pb_doc) for pb_doc in document_list]
-    yield self.solr_adapter.index_documents(
+    await self.solr_adapter.index_documents(
       app_id=app_id, namespace=namespace, index_name=index_name,
       documents=documents
     )
@@ -74,8 +71,7 @@ class APIMethods(object):
     ok = search_pb2.RequestStatus(code=search_pb2.SearchServiceError.OK)
     index_doc_response.status.extend([ok] * len(document_list))
 
-  @gen.coroutine
-  def delete_document(self, delete_doc_request, delete_doc_response):
+  async def delete_document(self, delete_doc_request, delete_doc_response):
     """ Deletes specified documents.
 
     Args:
@@ -89,15 +85,14 @@ class APIMethods(object):
     index_name = index_spec.name
     ids = list(params.doc_id)
 
-    yield self.solr_adapter.delete_documents(
+    await self.solr_adapter.delete_documents(
       app_id=app_id, namespace=namespace, index_name=index_name, ids=ids
     )
 
     ok = search_pb2.RequestStatus(code=search_pb2.SearchServiceError.OK)
     delete_doc_response.status.extend([ok] * len(ids))
 
-  @gen.coroutine
-  def list_indexes(self, list_indexes_request, list_indexes_response):
+  async def list_indexes(self, list_indexes_request, list_indexes_response):
     """ Lists all indexes for an application.
 
     Args:
@@ -107,8 +102,7 @@ class APIMethods(object):
     raise InvalidRequest("List indexes method is not implemented "
                          "in AppScale SearchService2 yet")
 
-  @gen.coroutine
-  def list_documents(self, list_documents_request, list_documents_response):
+  async def list_documents(self, list_documents_request, list_documents_response):
     """ List all documents within an index.
 
     Args:
@@ -125,7 +119,7 @@ class APIMethods(object):
     namespace = index_spec.namespace
     index_name = index_spec.name
 
-    documents = yield self.solr_adapter.list_documents(
+    documents = await self.solr_adapter.list_documents(
       app_id=app_id, namespace=namespace, index_name=index_name,
       start_doc_id=start_doc_id, include_start_doc=include_start_doc,
       limit=limit, keys_only=keys_only
@@ -135,8 +129,7 @@ class APIMethods(object):
       new_doc = list_documents_response.document.add()
       _fill_pb_document(new_doc, doc)
 
-  @gen.coroutine
-  def search(self, search_request, search_response):
+  async def search(self, search_request, search_response):
     """ Searches for documents matching a query.
 
     Args:
@@ -174,7 +167,7 @@ class APIMethods(object):
     # facet_depth = params.facet_depth  # Ignoring facet_depth
 
     # Select documents using Solr
-    search_result = yield self.solr_adapter.query(
+    search_result = await self.solr_adapter.query(
       app_id=app_id, namespace=namespace, index_name=index_name,
       query=query, projection_fields=projection_fields,
       sort_expressions=sort_fields, limit=limit, offset=offset,
@@ -305,12 +298,8 @@ def _from_pb_document(pb_document):
         "GAE document contains a field of unknown type: {}"
         .format(pb_value.type)
       )
-    field = Field(
-      type=type_,
-      name=pb_field.name,
-      value=value,
-      language=pb_field.value.language or pb_document.language
-    )
+    field = Field(type_, pb_field.name, value,
+                  pb_field.value.language or pb_document.language)
     fields.append(field)
 
   facets = []
@@ -327,11 +316,7 @@ def _from_pb_document(pb_document):
         "GAE document contains a facet of unknown type: {}"
         .format(pb_value.type)
       )
-    facet = Facet(
-      type=type_,
-      name=pb_facet.name,
-      value=value
-    )
+    facet = Facet(type_, pb_facet.name, value)
     facets.append(facet)
 
   return Document(

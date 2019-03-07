@@ -18,7 +18,11 @@ A server that handles Search API requests from GAE application.
    
    `SearchService2/solr-management/ensure_solr_running.sh`
    
-5. Start the server with `appscale-search2 --port <PORT> --verbose`
+5. Start the server with 
+   ```
+   appscale-search2 --verbose --host <PRIVATE_IP> --port <PORT> 
+                    --zk-locations <ZK1> <ZK2> <ZK3>
+   ```
 
 
 ### Known issues
@@ -36,6 +40,4 @@ A server that handles Search API requests from GAE application.
  - Field expressions are not implemented yet.
  - `_rank` in query should be interpreted as a reference to `rank` of document.
  - It doesn't seem that we can easily implement document scores in results.
- - We need to get rid of Remote API layer. Application id and search method
-   can be part of url. In this case appscale_search_stub needs to be updated.
  

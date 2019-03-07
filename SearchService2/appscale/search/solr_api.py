@@ -11,7 +11,7 @@ import time
 
 from urllib.parse import urlencode
 
-from tornado import httpclient, gen, ioloop
+from tornado import httpclient, ioloop
 from appscale.common import appscale_info
 
 from appscale.search.constants import (
@@ -107,8 +107,7 @@ class SolrAPI(object):
   def live_nodes(self):
       return self._solr_live_nodes_list
 
-  @gen.coroutine
-  def request(self, method, path, params=None, json_data=None, headers=None):
+  async def request(self, method, path, params=None, json_data=None):
     """ Sends HTTP request to one of Solr live nodes.
 
     Args:
@@ -116,7 +115,6 @@ class SolrAPI(object):
       path: a str - HTTP path.
       params: a dict containing URL params
       json_data: a json-serializable object to pass in request body.
-      headers: a dictionary containing HTTP headers to send.
     Returns (asynchronously):
       A httpclient.HTTPResponse.
     """
@@ -127,11 +125,14 @@ class SolrAPI(object):
       url = 'http://{}{}'.format(self.solr_location, path)
 
     if json_data is not None:
-      headers = headers or {}
-      headers['Content-type'] = 'application/json'
+      headers = {'Content-type': 'application/json'}
       body = json.dumps(json_data)
     else:
+      headers = None
       body = None
+
+    if path.endswith('query'):
+      logger.debug(u'QUERY_BODY: {}'.format(body))
 
     async_http_client = httpclient.AsyncHTTPClient()
     request = httpclient.HTTPRequest(
@@ -140,7 +141,7 @@ class SolrAPI(object):
       allow_nonstandard_methods=True
     )
     try:
-      response = yield async_http_client.fetch(request)
+      response = await async_http_client.fetch(request)
     except socket.error as err:
       raise SolrIsNotReachable('Socket error ({})'.format(err))
     except httpclient.HTTPError as err:
@@ -161,22 +162,19 @@ class SolrAPI(object):
       else:
         raise SolrServerError(msg)
 
-    raise gen.Return(response)
+    return response
 
-  @gen.coroutine
-  def get(self, path, params=None, json_data=None, headers=None):
+  async def get(self, path, params=None, json_data=None):
     """ GET wrapper of request method """
-    response = yield self.request('GET', path, params, json_data, headers)
-    raise gen.Return(response)
+    response = await self.request('GET', path, params, json_data)
+    return response
 
-  @gen.coroutine
-  def post(self, path, params=None, json_data=None, headers=None):
+  async def post(self, path, params=None, json_data=None):
     """ POST wrapper of request method """
-    response = yield self.request('POST', path, params, json_data, headers)
-    raise gen.Return(response)
+    response = await self.request('POST', path, params, json_data)
+    return response
 
-  @gen.coroutine
-  def list_collections(self):
+  async def list_collections(self):
     """ Lists names of collections created in Solr.
     Returned list can contain collection with missing core.
 
@@ -184,7 +182,7 @@ class SolrAPI(object):
       A list of collection names present in Solr.
     """
     try:
-      response = yield self.get('/solr/admin/collections',
+      response = await self.get('/solr/admin/collections',
                                 params={'action': 'CLUSTERSTATUS'})
       response_data = json.loads(response.body.decode('utf-8'))
       collections = response_data['cluster']['collections']
@@ -199,15 +197,12 @@ class SolrAPI(object):
       self._collections_cache = set(has_cores)
       self._broken_collections_cache = set(has_no_cores)
       self._cache_timestamp = time.time()
-      raise gen.Return(
-        (self._collections_cache, self._broken_collections_cache)
-      )
+      return self._collections_cache, self._broken_collections_cache
     except (SolrError, KeyError):
       logger.exception('Failed to list collections')
       raise
 
-  @gen.coroutine
-  def does_collection_exist(self, collection):
+  async def does_collection_exist(self, collection):
     # Check if collection is already known locally
     if collection in self._collections_cache:
       return True
@@ -218,7 +213,7 @@ class SolrAPI(object):
         return True
 
     # Update local cache and check again
-    collections, broken_collections = yield self.list_collections()
+    collections, broken_collections = await self.list_collections()
     if collection in collections:
       return True
     if collection in self._broken_collections_cache:
@@ -227,20 +222,19 @@ class SolrAPI(object):
       return True
     return False
 
-  @gen.coroutine
-  def ensure_collection(self, collection):
+  async def ensure_collection(self, collection):
     """ Asynchronously ensures that Solr collection is created.
 
     Args:
       collection: a str - name of collection to make sure is created.
     """
-    if (yield self.does_collection_exist(collection)):
+    if await self.does_collection_exist(collection):
       return
     # Create Solr collection
     try:
       # Collection creation in API v2 doesn't support collection.configName yet.
       # So using old API (/solr/...).
-      response = yield self.get(
+      response = await self.get(
         '/solr/admin/collections',
         params={
           'action': 'CREATE',
@@ -272,10 +266,9 @@ class SolrAPI(object):
     # Update collections cache in background
     ioloop.IOLoop.current().spawn_callback(self.list_collections)
 
-  @gen.coroutine
-  def delete_collection(self, collection):
+  async def delete_collection(self, collection):
     try:
-      response = yield self.get(
+      response = await self.get(
         '/solr/admin/collections',
         params={
           'action': 'DELETE',
@@ -293,8 +286,7 @@ class SolrAPI(object):
     # Update collections cache in background
     ioloop.IOLoop.current().spawn_callback(self.list_collections)
 
-  @gen.coroutine
-  def get_schema_info(self, collection):
+  async def get_schema_info(self, collection):
     """ Retrieves collection shema information. It uses Luke handler
     because, in contrast to a regular get method of Schema API,
     Luke handler provides information about dynamically created fields.
@@ -304,36 +296,35 @@ class SolrAPI(object):
     Returns (asynchronously):
       A dict containing information about Solr collection.
     """
-    yield self.ensure_collection(collection)
+    await self.ensure_collection(collection)
     try:
       # Luke handler is not supported in API v2 yet.
       # /v2/collections/<COLLECTION>/schema/fields doesn't show dynamically
       # created fields.
       # So using old API (/solr/...).
-      response = yield self.get(
+      response = await self.get(
         '/solr/{}/admin/luke?numTerms=0'.format(collection)
       )
-      raise gen.Return(json.loads(response.body.decode('utf-8')))
+      return json.loads(response.body.decode('utf-8'))
     except SolrError:
       logger.warning('Failed to fetch fields list for collection {}'
                      .format(collection))
       raise
 
-  @gen.coroutine
-  def put_documents(self, collection, documents):
+  async def put_documents(self, collection, documents):
     """ Asynchronously puts documents into Solr collection.
 
     Args:
       collection: a str - name of Solr collection.
       documents: a list of documents to put.
     """
-    yield self.ensure_collection(collection)
+    await self.ensure_collection(collection)
     try:
       if SOLR_COMMIT_WITHIN:
         params = {'commitWithin': SOLR_COMMIT_WITHIN}
       else:
         params = {'commit': 'true'}
-      yield self.post(
+      await self.post(
         '/v2/collections/{}/update'.format(collection),
         params=params, json_data=documents
       )
@@ -344,15 +335,14 @@ class SolrAPI(object):
                      .format(len(documents), collection))
       raise
 
-  @gen.coroutine
-  def delete_documents(self, collection, ids):
+  async def delete_documents(self, collection, ids):
     """ Asynchronously deletes documents from Solr collection.
 
     Args:
       collection: a str - name of Solr collection.
       ids: a list of document IDs to delete.
     """
-    yield self.ensure_collection(collection)
+    await self.ensure_collection(collection)
     try:
       if SOLR_COMMIT_WITHIN:
         params = {'commitWithin': SOLR_COMMIT_WITHIN}
@@ -360,7 +350,7 @@ class SolrAPI(object):
         params = {'commit': 'true'}
       # Delete operation doesn't work with API v2 yet.
       # So using old API (/solr/...).
-      yield self.post(
+      await self.post(
         '/solr/{}/update'.format(collection),
         params=params, json_data={"delete": ids}
       )
@@ -371,11 +361,10 @@ class SolrAPI(object):
                      .format(len(ids), collection))
       raise
 
-  @gen.coroutine
-  def query_documents(self, collection, query, filter_=None, offset=None,
-                      limit=None, fields=None, sort=None, facet_dict=None,
-                      cursor=None, def_type=None, query_fields=None,
-                      stats_fields=None):
+  async def query_documents(self, collection, query, filter_=None, offset=None,
+                            limit=None, fields=None, sort=None, facet_dict=None,
+                            cursor=None, def_type=None, query_fields=None,
+                            stats_fields=None):
     """ Queries Solr for documents matching specified query.
 
     Args:
@@ -395,7 +384,7 @@ class SolrAPI(object):
       A SolrSearchResult containing documents, facets, cursor
       and total number of documents matching the query.
     """
-    yield self.ensure_collection(collection)
+    await self.ensure_collection(collection)
 
     # Query params which are not supported by JSON Request API yet
     # should go inside "params" attribute.
@@ -425,11 +414,8 @@ class SolrAPI(object):
       if value is not None
     }
 
-    json_body = json.dumps(json_data)
-    logger.debug(u'QUERY_BODY: {}'.format(json_body))
-
     try:
-      response = yield self.post(
+      response = await self.post(
         '/v2/collections/{}/query'.format(collection),
         json_data=json_data
       )
@@ -443,10 +429,10 @@ class SolrAPI(object):
         facet_results=json_response.get('facets', {}),
         stats_results=stats.get('stats_fields', {}) if stats else {}
       )
-      logger.info('Found {} and fetched {} documents from collection {}'
-                  .format(solr_search_result.num_found,
-                          len(solr_search_result.documents), collection))
-      raise gen.Return(solr_search_result)
+      logger.debug('Found {} and fetched {} documents from collection {}'
+                   .format(solr_search_result.num_found,
+                           len(solr_search_result.documents), collection))
+      return solr_search_result
     except SolrError:
       logger.warning('Failed to execute query {} against collection {}'
                      .format(json_data, collection))
