@@ -34,5 +34,7 @@ setup(
   include_package_data=True,
   entry_points={'console_scripts': [
     'appscale-search2=appscale.search.search_server:main',
+    'appscale-search2-reindex=appscale.search.search_server:reindex',
+    'appscale-search2-collections=appscale.search.search_server:collections',
   ]}
 )
