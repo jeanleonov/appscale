@@ -36,10 +36,11 @@ KEY_LOCATION = "/etc/appscale/certs/mykey.pem"
 # The location on the system that has the IP of the search server.
 SEARCH_LOCATION_FILE = "/etc/appscale/search_ip"
 SEARCH_PROXY_FILE = "/etc/appscale/load_balancer_ips"
-SEARCH_PROXY_PORT = 17446
+SEARCH_PROXY_PORT = 9999
 
 # The port that the search server is running on.  
-_SEARCH_PORT = 9999
+_SEARCH_PORT = 53423
+
 
 class SearchServiceStub(apiproxy_stub.APIProxyStub):
   """ AppScale backed Search service stub.
@@ -77,7 +78,7 @@ class SearchServiceStub(apiproxy_stub.APIProxyStub):
           lbs = [host.strip() for host in locations_file if host.strip()]
           if not lbs:
             logging.error('No LB nodes were found. Search API won\'t work')
-          self._search_locations = ['{}:{}'.format(host, _SEARCH_PORT)
+          self._search_locations = ['{}:{}'.format(host, SEARCH_PROXY_PORT)
                                     for host in lbs]
         logging.info('Using managed SearchService at {}'
                      .format(self._search_locations))
