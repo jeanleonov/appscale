@@ -351,7 +351,7 @@ installsolr7()
     cachepackage ${SOLR_PACKAGE} ${SOLR_PACKAGE_MD5}
 
     SOLR_EXTRACT_DIR=/opt/
-    SOLR_VAR_DIR=/var/solr/
+    SOLR_VAR_DIR=/opt/appscale/solr7/
     SOLR_ARCHIVE="${PACKAGE_CACHE}/${SOLR_PACKAGE}"
 
     tar xzf "${SOLR_ARCHIVE}" solr-${SOLR_VER}/bin/install_solr_service.sh --strip-components=2
@@ -360,9 +360,10 @@ installsolr7()
     # -n  Do not start solr service after install.
     # -f  Upgrade Solr. Overwrite symlink and init script of previous installation.
     sudo bash ./install_solr_service.sh "${SOLR_ARCHIVE}" \
-              -d "${SOLR_VAR_DIR}" \
-              -i "${SOLR_EXTRACT_DIR}" \
+              -d ${SOLR_VAR_DIR} \
+              -i ${SOLR_EXTRACT_DIR} \
               -n -f
+    sudo update-rc.d solr disable
 }
 
 installcassandra()
@@ -685,6 +686,12 @@ installapiserver()
 
 installsearch2()
 {
+    ANTLR_VER=4.7.2
+    ANTLR_JAR="antlr-${ANTLR_VER}-complete.jar"
+    ANTLR_JAR_MD5="58c9cdda732eabd9ea3e197fa7d8f2d6"
+    cachepackage ${ANTLR_JAR} ${ANTLR_JAR_MD5}
+    cp "${PACKAGE_CACHE}/${ANTLR_JAR}" "/usr/local/lib/${ANTLR_JAR}"
+
     # Create virtual environment based on Python 3
     rm -rf /opt/appscale_search2_server
     python3 -m venv /opt/appscale_search2_server/

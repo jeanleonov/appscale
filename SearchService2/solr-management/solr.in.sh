@@ -28,7 +28,7 @@
 #SOLR_STOP_WAIT="180"
 
 # Increase Java Heap as needed to support your indexing / query needs
-SOLR_HEAP="${SOLR_MEM}"
+SOLR_HEAP="${SOLR_HEAP}"
 
 # Expert: If you want finer control over memory options, specify them directly
 # Comment out SOLR_HEAP if you are using this though, that takes precedence
@@ -83,11 +83,11 @@ SOLR_HOST="${PRIVATE_IP}"
 
 # Location where the bin/solr script will save PID files for running instances
 # If not set, the script will create PID files in $SOLR_TIP/bin
-SOLR_PID_DIR="/var/solr"
+SOLR_PID_DIR="/opt/appscale/solr7"
 
 # Path to a directory for Solr to store cores and their data. By default, Solr will use server/solr
 # If solr.xml is not stored in ZooKeeper, this directory needs to contain solr.xml
-SOLR_HOME="/var/solr/data"
+SOLR_HOME="/opt/appscale/solr7/data"
 
 # Path to a directory that Solr will use as root for data folders for each core.
 # If not set, defaults to <instance_dir>/data. Overridable per core through 'dataDir' core property
@@ -96,14 +96,14 @@ SOLR_HOME="/var/solr/data"
 # Solr provides a default Log4J configuration xml file in server/resources
 # however, you may want to customize the log settings and file appender location
 # so you can point the script to use a different log4j2.xml file
-LOG4J_PROPS="/var/solr/log4j2.xml"
+LOG4J_PROPS="/opt/appscale/solr7/log4j2.xml"
 
 # Changes the logging level. Valid values: ALL, TRACE, DEBUG, INFO, WARN, ERROR, FATAL, OFF. Default is INFO
 # This is an alternative to changing the rootLogger in log4j2.xml
 SOLR_LOG_LEVEL="INFO"
 
 # Location where Solr should write logs to. Absolute or relative to solr start dir
-SOLR_LOGS_DIR="/var/solr/logs"
+SOLR_LOGS_DIR="/var/log/appscale/solr"
 
 # Enables log rotation before starting Solr. Setting SOLR_LOG_PRESTART_ROTATION=true will let Solr take care of pre
 # start rotation of logs. This is false by default as log4j2 handles this for us. If you choose to use another log

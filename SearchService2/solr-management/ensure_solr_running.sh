@@ -38,40 +38,47 @@ else
     # We shouldn't fail if root was created after we entered to else clause.
 fi
 
-
 # Generating proper solr.in.sh with needed SolrCloud configurations.
 HEAP_REDUCTION="${HEAP_REDUCTION:-0.0}"
 TOTAL_MEM_KB=$(awk '/MemTotal/ { print $2 }' /proc/meminfo)
-# Give Solr at most half of total memory minus heap reduction.
-SOLR_MEM_MB=$(echo "$TOTAL_MEM_KB $HEAP_REDUCTION" \
-              | awk '{ printf "%d", $1 * (1 - $2) / 1024 / 2 }')
+# Give Solr at most half of total memory minus heap reduction (kill if greater).
+SOLR_MEM_MAX=$(echo "$TOTAL_MEM_KB $HEAP_REDUCTION" \
+               | awk '{ printf "%d", $1 * (1 - $2) / 1024 / 2 }')
+# Always try to give at least 70% of max memory.
+SOLR_MEM_LOW=$(echo "$SOLR_MEM_MAX" | awk '{ printf "%d", $1 * 0.70 }')
+# Slow process down when usage is higher.
+SOLR_MEM_HIGH=$(echo "$SOLR_MEM_MAX" | awk '{ printf "%d", $1 * 0.90 }')
 
-echo "Ensuring ulimit properties are set for Solr"
-grep -q "solr \+hard \+nofile \+65535" /etc/security/limits.conf \
-  || echo "solr hard nofile 65535" >> /etc/security/limits.conf
-grep -q "solr \+soft \+nofile \+65535" /etc/security/limits.conf \
-  || echo "solr soft nofile 65535" >> /etc/security/limits.conf
-grep -q "solr \+hard \+nproc \+65535" /etc/security/limits.conf \
-  || echo "solr hard nproc 65535" >> /etc/security/limits.conf
-grep -q "solr \+soft \+nproc \+65535" /etc/security/limits.conf \
-  || echo "solr soft nproc 65535" >> /etc/security/limits.conf
+mkdir -p /var/log/appscale/solr
+sudo chown -R solr:solr /var/log/appscale/solr
 
-export SOLR_MEM="${SOLR_MEM_MB}m"
+export SOLR_HEAP="${SOLR_MEM_HIGH}m"
+export MEMORY_LOW="${SOLR_MEM_LOW}M"
+export MEMORY_HIGH="${SOLR_MEM_HIGH}M"
+export MEMORY_MAX="${SOLR_MEM_MAX}M"
 export ZK_HOST
 export PRIVATE_IP
-envsubst < "${SOLR_MANAGEMENT_DIR}/solr.in.sh" > "/tmp/solr.in.sh"
-if cmp -s "/tmp/solr.in.sh" "/etc/default/solr.in.sh"
+envsubst '$SOLR_HEAP $ZK_HOST $PRIVATE_IP' \
+ < "${SOLR_MANAGEMENT_DIR}/solr.in.sh" > "/tmp/solr.in.sh"
+envsubst '$MEMORY_LOW $MEMORY_HIGH $MEMORY_MAX'\
+ < "${SOLR_MANAGEMENT_DIR}/solr.service" > "/tmp/solr.service"
+if cmp -s "/tmp/solr.in.sh" "/etc/default/solr.in.sh" \
+&& cmp -s "/tmp/solr.service" "/etc/systemd/system/solr.service"
 then
     echo "/etc/default/solr.in.sh has no changes."
+    echo "/etc/systemd/system/solr.service has no changes."
     echo "Making sure Solr is running."
-    sudo systemctl start solr
     sudo systemctl enable solr
+    sudo systemctl start solr
 else
     echo "Copying new solr.in.sh to /etc/default/solr.in.sh"
     sudo cp "/tmp/solr.in.sh" "/etc/default/solr.in.sh"
+    echo "Copying new solr.service to /etc/systemd/system/solr.service"
+    sudo cp "/tmp/solr.service" "/etc/systemd/system/solr.service"
     echo "Making sure Solr is restarted."
-    sudo systemctl restart solr
+    sudo systemctl daemon-reload
     sudo systemctl enable solr
+    sudo systemctl restart solr
 fi
 
 echo "Making sure appscale-specific config set is uploaded to zookeeper."
