@@ -19,7 +19,6 @@ from appscale.datastore.zkappscale.transaction_manager import (
   TransactionManager)
 
 from google.appengine.datastore import datastore_pb
-from google.appengine.datastore import entity_pb
 
 logger = logging.getLogger(__name__)
 
@@ -108,31 +107,24 @@ class DatastoreRestore(multiprocessing.Process):
     Args:
       entity_batch: A list of entities to store.
     """
-    logger.debug("Entity batch to process: {0}".format(entity_batch))
-
-    # Convert encoded entities to EntityProto objects, change the app ID if
-    # it's different than the original and encode again.
-    new_entities_encoded = []
-    ent_protos = []
-    for entity in entity_batch:
-      ent_proto = entity_pb.EntityProto()
-      ent_proto.ParseFromString(entity)
-      ent_proto.key().set_app(self.app_id)
-
-      ent_protos.append(ent_proto)
-      new_entities_encoded.append(ent_proto.Encode())
-    logger.debug("Entities encoded: {0}".format(new_entities_encoded))
+    logger.debug("Entity batch to process: %s", entity_batch)
 
     # Create a PutRequest with the entities to be stored.
+    first = True
     put_request = datastore_pb.PutRequest()
     put_response = datastore_pb.PutResponse()
-    for entity in new_entities_encoded:
+    for entity in entity_batch:
       new_entity = put_request.add_entity()
       new_entity.MergeFromString(entity)
-    logger.debug("Put request: {0}".format(put_request))
+      new_entity.key().set_app(self.app_id)
+      if first:
+        logger.info('First key in batch: {}'
+                    .format(str(new_entity.key()).replace('\n', ' ')))
+      first = False
+    logger.debug("Put request: %s", put_request)
 
     self.dynamic_put_sync(self.app_id, put_request, put_response)
-    self.entities_restored += len(ent_protos)
+    self.entities_restored += len(entity_batch)
 
   def read_from_file_and_restore(self, backup_file):
     """ Reads entities from backup file and stores them in the datastore.
