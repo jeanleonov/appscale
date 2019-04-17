@@ -7,6 +7,7 @@ import time
 import attr
 
 from appscale.common import appscale_info
+from appscale.hermes import helper
 from appscale.hermes.converter import Meta, include_list_name
 
 # The endpoint used for retrieving queue stats.
@@ -14,11 +15,6 @@ NODETOOL_STATUS_COMMAND = '/opt/cassandra/cassandra/bin/nodetool status'
 NODETOOL_STATUS_TIMEOUT = 60
 
 logger = logging.getLogger(__name__)
-
-
-class NodetoolStatusError(Exception):
-  """ Indicates that `nodetool status` command failed. """
-  pass
 
 
 @include_list_name('cassandra.node')
@@ -99,34 +95,8 @@ class CassandraStatsSource(object):
       An instance of CassandraStatsSnapshot.
     """
     start = time.time()
-
-    process = await asyncio.create_subprocess_shell(
-      NODETOOL_STATUS_COMMAND,
-      stdout=asyncio.subprocess.PIPE,
-      stderr=asyncio.subprocess.PIPE
-    )
-    logger.info('Started subprocess `{}` (pid: {})'
-                .format(NODETOOL_STATUS_COMMAND, process.pid))
-
-    try:
-      # Wait for the subprocess to finish
-      stdout, stderr = await asyncio.wait_for(
-        process.communicate(), NODETOOL_STATUS_TIMEOUT
-      )
-    except asyncio.TimeoutError:
-      raise NodetoolStatusError(
-        'Timed out waiting for subprocess `{}` (pid: {})'
-        .format(NODETOOL_STATUS_COMMAND, process.pid)
-      )
-
-    output = stdout.decode()
-    error = stderr.decode()
-    if error:
-      logger.warning(error)
-    if process.returncode != 0:
-      raise NodetoolStatusError('Subprocess failed with return code {} ({})'
-                                .format(process.returncode, error))
-
+    output, error = helper.subprocess(NODETOOL_STATUS_COMMAND,
+                                      NODETOOL_STATUS_TIMEOUT)
     known_db_nodes = set(appscale_info.get_db_ips())
     nodes = []
     shown_nodes = set()
