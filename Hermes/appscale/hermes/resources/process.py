@@ -8,6 +8,7 @@ import psutil
 from appscale.admin.service_manager import ServiceManager
 from appscale.common import appscale_info
 from appscale.hermes import helper
+from appscale.hermes.constants import SubprocessError
 
 from appscale.hermes.unified_service_names import (
   find_service_by_monit_name
@@ -139,8 +140,12 @@ async def get_known_processes():
   """
   known_processes = {}
 
-  # Detect processes supervised by monit
-  output, error = await helper.subprocess('monit status', timeout=5)
+  try:
+    # Detect processes supervised by monit
+    output, error = await helper.subprocess('monit status', timeout=5)
+  except SubprocessError as err:
+    logger.warning('Failed to run `monit status` ({})'.format(err))
+    output = ''
   for match in MONIT_PROCESS_PATTERN.finditer(output):
     monit_name = match.group('name')
     pid = int(match.group('pid'))
@@ -148,20 +153,24 @@ async def get_known_processes():
     application_id = service.get_application_id_by_monit_name(monit_name)
     tags = [APPSCALE_PROCESS_TAG, service.name, monit_name]
     if application_id:
-      tags.append(application_id)
+      tags.append('app___{}'.format(application_id))
     known_processes[pid] = tags
 
   # Detect processes supervised by AppScale ServiceManager
   for server in ServiceManager.get_state():
-    known_processes[server.process.pid] = [
-      APPSCALE_PROCESS_TAG, server.type, server.service.slice
-    ]
+    known_processes[server.process.pid] = [APPSCALE_PROCESS_TAG, server.type]
 
-  # Detect processes supervised by systemd
-  output, error = await helper.subprocess(
-    'systemctl status solr.service | grep \'Main PID\' | awk \'{ print $3 }\'',
-    timeout=5
-  )
+  try:
+    # Detect processes supervised by systemd
+    output, error = await helper.subprocess(
+      'systemctl status solr.service '
+      '| grep \'Main PID\' | awk \'{ print $3 }\'',
+      timeout=5
+    )
+  except SubprocessError as err:
+    logger.warning('Failed to run `systemctl status solr.service` ({})'
+                   .format(err))
+    output = ''
   if output.isdigit() and output != '0':
     solr_pid = int(output)
     known_processes[solr_pid] = [

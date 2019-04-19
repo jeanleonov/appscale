@@ -1,5 +1,4 @@
 """ Fetches `nodetool status` info. """
-import asyncio
 import logging
 import re
 import time
@@ -8,6 +7,7 @@ import attr
 
 from appscale.common import appscale_info
 from appscale.hermes import helper
+from appscale.hermes.constants import SubprocessError
 from appscale.hermes.converter import Meta, include_list_name
 
 # The endpoint used for retrieving queue stats.
@@ -95,8 +95,8 @@ class CassandraStatsSource(object):
       An instance of CassandraStatsSnapshot.
     """
     start = time.time()
-    output, error = helper.subprocess(NODETOOL_STATUS_COMMAND,
-                                      NODETOOL_STATUS_TIMEOUT)
+    output, error = await helper.subprocess(NODETOOL_STATUS_COMMAND,
+                                            NODETOOL_STATUS_TIMEOUT)
     known_db_nodes = set(appscale_info.get_db_ips())
     nodes = []
     shown_nodes = set()
@@ -150,7 +150,7 @@ class CassandraStatsSource(object):
         shown_nodes.add(address)
 
     else:
-      raise NodetoolStatusError(
+      raise SubprocessError(
         '`{}` output does not contain expected header. Actual output:\n{}'
         .format(NODETOOL_STATUS_COMMAND, output)
       )
