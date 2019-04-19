@@ -440,6 +440,8 @@ class Djinn
   PARAMETER_DEFAULT = 1
   PARAMETER_SHOW = 2
   PARAMETERS_AND_CLASS = {
+    'aws_subnet_id' => [String, nil, true],
+    'aws_vpc_id' => [String, nil, true],
     'azure_subscription_id' => [String, nil, false],
     'azure_app_id' => [String, nil, false],
     'azure_app_secret_key' => [String, nil, false],
@@ -4530,7 +4532,7 @@ HOSTS
     taskqueue_location = [get_load_balancer.private_ip,
                           TaskQueue::HAPROXY_PORT].join(':')
     source_archive = AppDashboard.prep(
-      my_public, my_private, PERSISTENT_MOUNT_POINT, datastore_location,
+      my_private, PERSISTENT_MOUNT_POINT, datastore_location,
       taskqueue_location)
 
     self.deploy_dashboard(source_archive)
