@@ -25,9 +25,14 @@ class Process(object):
   A container for all parameters representing process state at
   a specific moment of time.
   """
+  # A global dict containing previous processes state.
+  # It is used for computing *_1h_diff attributes.
+  PREVIOUS_STATE = {}
+
   utc_timestamp = attr.ib(default=None)
   host = attr.ib(default=None)
 
+  long_pid = attr.ib(default=None)
   pid = attr.ib(default=None)
   ppid = attr.ib(default=None)
   create_time = attr.ib(default=None)
@@ -44,6 +49,8 @@ class Process(object):
   cpu_user = attr.ib(default=None)
   cpu_system = attr.ib(default=None)
   cpu_percent = attr.ib(default=None)
+  cpu_user_1h_diff = attr.ib(default=None)
+  cpu_system_1h_diff = attr.ib(default=None)
 
   memory_resident = attr.ib(default=None)
   memory_virtual = attr.ib(default=None)
@@ -53,11 +60,20 @@ class Process(object):
   disk_io_write_count = attr.ib(default=None)
   disk_io_read_bytes = attr.ib(default=None)
   disk_io_write_bytes = attr.ib(default=None)
+  disk_io_read_count_1h_diff = attr.ib(default=None)
+  disk_io_write_count_1h_diff = attr.ib(default=None)
+  disk_io_read_bytes_1h_diff = attr.ib(default=None)
+  disk_io_write_bytes_1h_diff = attr.ib(default=None)
 
   threads_num = attr.ib(default=None)
   file_descriptors_num = attr.ib(default=None)
+
   ctx_switches_voluntary = attr.ib(default=None)
   ctx_switches_involuntary = attr.ib(default=None)
+  ctx_switches_voluntary_1h_diff = attr.ib(default=None)
+  ctx_switches_involuntary_1h_diff = attr.ib(default=None)
+
+  sample_time_diff = attr.ib(default=None)
 
 
 MONIT_PROCESS_PATTERN = re.compile(
@@ -112,21 +128,59 @@ async def list_processes():
     parent_process = pid_to_process.get(ppid)
     if not parent_process:
       return []
-    if parent_process.ppid == 0:
+    if parent_process.ppid in [0, 1, 2]:  # Skip common root processes
       return parent_process.own_tags
     return parent_process.own_tags + list_ancestors_tags(parent_process.ppid)
 
+  host = appscale_info.get_private_ip()
+
   # Set the rest of information about processes state
-  for process in pid_to_process.values():
-    process.utc_timestamp = start_time
-    process.host = appscale_info.get_private_ip()
-    process.all_tags += list_ancestors_tags(process.ppid)
+  for p in pid_to_process.values():
+    # Set unique process identifier
+    p.long_pid = '{}_{}_{}'.format(
+      host, p.pid, int(p.create_time*1000)
+    )
+    # and *_1h_diff attributes
+    prev = Process.PREVIOUS_STATE.get(p.pid)
+    if prev:
+      # Compute one hour difference coefficient
+      diff_coef = 60 * 60 / (start_time - prev.utc_timestamp)
+      # Set diff attributes
+      p.cpu_user_1h_diff = (
+        (p.cpu_user - prev.cpu_user) * diff_coef
+      )
+      p.cpu_system_1h_diff = (
+        (p.cpu_system - prev.cpu_system) * diff_coef
+      )
+      p.disk_io_read_count_1h_diff = (
+        (p.disk_io_read_count - prev.disk_io_read_count) * diff_coef
+      )
+      p.disk_io_write_count_1h_diff = (
+        (p.disk_io_write_count - prev.disk_io_write_count) * diff_coef
+      )
+      p.disk_io_read_bytes_1h_diff = (
+        (p.disk_io_read_bytes - prev.disk_io_read_bytes) * diff_coef
+      )
+      p.disk_io_write_bytes_1h_diff = (
+        (p.disk_io_write_bytes - prev.disk_io_write_bytes) * diff_coef
+      )
+      p.ctx_switches_voluntary_1h_diff = (
+        (p.ctx_switches_voluntary - prev.ctx_switches_voluntary) * diff_coef
+      )
+      p.ctx_switches_involuntary_1h_diff = (
+        (p.ctx_switches_involuntary - prev.ctx_switches_involuntary) * diff_coef
+      )
+
+    p.utc_timestamp = start_time
+    p.host = host
+    p.all_tags += list_ancestors_tags(p.ppid)
 
   processes = pid_to_process.values()
   logger.info(
     "Prepared info about {} processes in {:.3f}s."
     .format(len(processes), time.time() - start_time)
   )
+  Process.PREVIOUS_STATE = pid_to_process
   return processes
 
 
@@ -197,7 +251,7 @@ def init_process_info(psutil_process, known_processes):
   io_counters = process_info['io_counters']
   ctx_switches = process_info['num_ctx_switches']
 
-  # Fill process attributes:
+  # Fill psutil process attributes:
   process.pid = process_info['pid']
   process.ppid = process_info['ppid']
   process.create_time = process_info['create_time']
