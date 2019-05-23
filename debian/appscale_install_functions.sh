@@ -161,6 +161,11 @@ EOF
     # On distros with systemd, the open file limit must be adjusted for each
     # service.
     if which systemctl > /dev/null && [ "${IN_DOCKER}" != "yes" ]; then
+        mkdir -p /etc/systemd/system/monit.service.d
+        cat <<EOF > /etc/systemd/system/monit.service.d/override.conf
+[Service]
+LimitNOFILE=200000
+EOF
         mkdir -p /etc/systemd/system/nginx.service.d
         cat <<EOF > /etc/systemd/system/nginx.service.d/override.conf
 [Service]
@@ -538,24 +543,28 @@ installapiclient()
 
 installgosdk()
 {
+    EXTRAS_DIR="/opt"
+    GO_RUNTIME_DIR="${EXTRAS_DIR}/go_appengine"
     if [ ${UNAME_MACHINE} = "x86_64" ]; then
-        GO_SDK_PACKAGE="appscale-go-runtime-1.9.48.zip"
-        GO_SDK_PACKAGE_MD5="3af8c4f6b3a147f99590862d2815025b"
-
-        GO_RUNTIME_DIR="/opt/go_appengine"
-        cachepackage ${GO_SDK_PACKAGE} ${GO_SDK_PACKAGE_MD5}
-
-        echo "Extracting Go SDK"
-        # Remove existing SDK directory in case it's old.
-        rm -rf ${GO_RUNTIME_DIR}
-        mkdir -p ${GO_RUNTIME_DIR}/gopath
-        unzip -q ${PACKAGE_CACHE}/${GO_SDK_PACKAGE} -d ${GO_RUNTIME_DIR}
+        GO_SDK_PACKAGE="go_appengine_sdk_linux_amd64-1.9.48.zip"
+        GO_SDK_PACKAGE_MD5="b5c1a3eab1ba69993c3a35661ec3043d"
+    elif [ ${UNAME_MACHINE} = "i386" ]; then
+        GO_SDK_PACKAGE="go_appengine_sdk_linux_386-1.9.48.zip"
+        GO_SDK_PACKAGE_MD5="b6aad6a3cb2506dfe1067e06fb93f9fb"
     else
         echo "Warning: There is no binary appscale-go-runtime package"
         echo "available for ${UNAME_MACHINE}. If you need support for Go"
         echo "applications, compile github.com/AppScale/appscale-go-runtime"
         echo "and install in ${GO_RUNTIME_DIR}/goroot."
+        return 0
     fi
+
+    cachepackage ${GO_SDK_PACKAGE} ${GO_SDK_PACKAGE_MD5}
+
+    echo "Extracting Go SDK"
+    # Remove existing SDK directory in case it's old.
+    rm -rf ${GO_RUNTIME_DIR}
+    unzip -q ${PACKAGE_CACHE}/${GO_SDK_PACKAGE} -d ${EXTRAS_DIR}
 }
 
 installpycapnp()
@@ -609,10 +618,11 @@ installadminserver()
 installhermes()
 {
     # Create virtual environment based on Python 3
-    rm -rf /opt/appscale_hermes
-    python3 -m venv /opt/appscale_hermes/
+    mkdir -p /opt/appscale_venvs
+    rm -rf /opt/appscale_venvs/hermes
+    python3 -m venv /opt/appscale_venvs/hermes/
     # Install Hermes and its dependencies in it
-    HERMES_PIP=/opt/appscale_hermes/bin/pip
+    HERMES_PIP=/opt/appscale_venvs/hermes/bin/pip
     ${HERMES_PIP} install --upgrade --no-deps ${APPSCALE_HOME}/common
     ${HERMES_PIP} install ${APPSCALE_HOME}/common
     ${HERMES_PIP} install --upgrade --no-deps ${APPSCALE_HOME}/AdminServer
@@ -646,8 +656,9 @@ installapiserver()
     (cd APIServer && protoc --python_out=./appscale/api_server *.proto)
     # This package needs to be installed in a virtualenv because the protobuf
     # library conflicts with the google namespace in the SDK.
-    rm -rf /opt/appscale_api_server
-    virtualenv /opt/appscale_api_server
+    mkdir -p /opt/appscale_venvs
+    rm -rf /opt/appscale_venvs/api_server
+    virtualenv /opt/appscale_venvs/api_server
 
     # The activate script fails under `set -u`.
     unset_opt=$(shopt -po nounset)
@@ -662,7 +673,7 @@ installapiserver()
     esac
 
     set +u
-    (source /opt/appscale_api_server/bin/activate && \
+    (source /opt/appscale_venvs/api_server/bin/activate && \
      pip install -U pip && \
      pip install "${tornado_package}" && \
      pip install ${APPSCALE_HOME}/AppControllerClient ${APPSCALE_HOME}/common \

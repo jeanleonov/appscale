@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
   name='appscale-hermes',
-  version='0.3.0',
+  version='0.5.0',
   description='AppScale module which provides statistics API.',
   author='AppScale Systems, Inc.',
   url='https://github.com/AppScale/appscale',

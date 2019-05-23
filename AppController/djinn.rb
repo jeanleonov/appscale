@@ -496,10 +496,17 @@ class Djinn
   ].freeze
 
   # The amount of memory in MB for each instance class.
-  INSTANCE_CLASSES = { F1: 128,
-                       F2: 256,
-                       F4: 512,
-                       F4_1G: 1024 }.freeze
+  INSTANCE_CLASSES = {
+    F1: 128,
+    F2: 256,
+    F4: 512,
+    F4_1G: 1024,
+    B1: 128,
+    B2: 256,
+    B4: 512,
+    B4_1G: 1024,
+    B8: 1024,
+  }.freeze
 
   # Creates a new Djinn, which holds all the information needed to configure
   # and deploy all the services on this node.
@@ -618,9 +625,9 @@ class Djinn
       acc = AppControllerClient.new(get_shadow.private_ip, @@secret)
       begin
         return acc.relocate_version(version_key, http_port, https_port)
-      rescue FailedNodeException
+      rescue FailedNodeException => e
         Djinn.log_warn("Failed to forward relocate_version " \
-          "call to #{get_shadow}.")
+          "call to #{get_shadow} (#{e.to_s}).")
         return NOT_READY
       end
     end
@@ -691,8 +698,8 @@ class Djinn
           begin
             acc.kill(stop_deployment)
             Djinn.log_info("kill: sent kill command to node at #{ip}.")
-          rescue FailedNodeException
-            Djinn.log_warn("kill: failed to talk to node at #{ip} while.")
+          rescue FailedNodeException => e
+            Djinn.log_warn("kill: exception talking to #{ip}: #{e.to_s}.")
           end
         }
       }
@@ -1032,8 +1039,9 @@ class Djinn
         HelperFunctions.scp_file(archived_file, remote_file,
                                  get_shadow.private_ip, get_shadow.ssh_key)
         return acc.upload_app(remote_file, file_suffix)
-      rescue FailedNodeException
-        Djinn.log_warn("Failed to forward upload_app call to shadow (#{get_shadow}).")
+      rescue FailedNodeException => e
+        Djinn.log_warn("Failed to forward upload_app call to shadow " \
+                       "(#{get_shadow}): #{e.to_s}.")
         return NOT_READY
       end
     end
@@ -1095,9 +1103,9 @@ class Djinn
       acc = AppControllerClient.new(get_shadow.private_ip, @@secret)
       begin
         return acc.get_app_upload_status(reservation_id)
-      rescue FailedNodeException
-        Djinn.log_warn(
-          "Failed to forward get_app_upload_status call to #{get_shadow}.")
+      rescue FailedNodeException => e
+        Djinn.log_warn("Failed to forward get_app_upload_status call " \
+                       "to #{get_shadow}: #{e.to_s}.")
         return NOT_READY
       end
     end
@@ -1124,9 +1132,9 @@ class Djinn
       acc = AppControllerClient.new(get_shadow.private_ip, @@secret)
       begin
         return acc.get_cluster_stats_json
-      rescue FailedNodeException
-        Djinn.log_warn(
-          "Failed to forward get_cluster_stats_json call to #{get_shadow}.")
+      rescue FailedNodeException => e
+        Djinn.log_warn("Failed to forward get_cluster_stats_json call " \
+                       "to #{get_shadow}: #{e.to_s}.")
         return NOT_READY
       end
     end
@@ -1145,26 +1153,24 @@ class Djinn
       @nodes.each { |node| ips << node.private_ip }
     }
     ips.each { |ip|
-      if ip == my_node.private_ip
+      threads << Thread.new {
+        Thread.current[:new_stat] = nil
         begin
-          new_stats << JSON.load(get_node_stats_json(@@secret))
-        rescue FailedNodeException => exception
-          Djinn.log_warn("Failed to get local status update because: " \
-            "#{exception.message}")
-        end
-      else
-        threads << Thread.new {
-          acc = AppControllerClient.new(ip, @@secret)
-          begin
-            Thread.current[:new_stat] = JSON.load(acc.get_node_stats_json)
-          rescue FailedNodeException, SOAP::FaultError
-            Djinn.log_warn("Failed to get status update from node at #{ip}, so " \
-              "not adding it to our cached info.")
-            Thread.current[:new_stat] = nil
+          if ip == my_node.private_ip
+            ret = get_node_stats_json(@@secret)
+          else
+            acc = AppControllerClient.new(ip, @@secret)
+            ret = acc.get_node_stats_json
           end
-        }
-      end
+          Thread.current[:new_stat] = JSON.load(ret)
+        rescue JSON::ParserError
+            Djinn.log_warn("Failed to parse stats JSON from #{ip}: #{ret}")
+        rescue FailedNodeException => e
+          Djinn.log_warn("Failed to get stats from #{ip}: #{e.to_s}.")
+        end
+      }
     }
+
     threads.each { |t|
       t.join
       new_stats << t[:new_stat] unless t[:new_stat].nil?
@@ -1235,8 +1241,9 @@ class Djinn
       acc = AppControllerClient.new(get_shadow.private_ip, @@secret)
       begin
         return acc.get_property(property_regex)
-      rescue FailedNodeException
-        Djinn.log_warn("Failed to forward get_property call to #{get_shadow}.")
+      rescue FailedNodeException => e
+        Djinn.log_warn("Failed to forward get_property call to " \
+                       "#{get_shadow}: #{e.to_s}.")
         return NOT_READY
       end
     end
@@ -1293,8 +1300,9 @@ class Djinn
       acc = AppControllerClient.new(get_shadow.private_ip, @@secret)
       begin
         return acc.set_property(property_name, property_value)
-      rescue FailedNodeException
-        Djinn.log_warn("Failed to forward set_property call to #{get_shadow}.")
+      rescue FailedNodeException => e
+        Djinn.log_warn("Failed to forward set_property call to " \
+                       "#{get_shadow}: #{e.to_s}.")
         return NOT_READY
       end
     end
@@ -1362,6 +1370,18 @@ class Djinn
       end
 
       @options[key] = val
+
+      if key == 'login'
+        Djinn.log_debug('[set_property] Regenerating cron for applications ' \
+          'since login changed')
+        versions_loaded_now = []
+        APPS_LOCK.synchronize { versions_loaded_now = @versions_loaded.clone }
+        Djinn.log_info("[set_property] Regenerating cron for #{versions_loaded_now}")
+        versions_loaded_now.each { |version_key|
+          project_id = version_key.split(VERSION_PATH_SEPARATOR).first
+          update_cron(project_id, @@secret)
+        }
+      end
       Djinn.log_info("Successfully set #{key} to #{val}.")
     }
     # Act upon changes.
@@ -1380,9 +1400,9 @@ class Djinn
       acc = AppControllerClient.new(get_shadow.private_ip, @@secret)
       begin
         return acc.update_cron(project_id)
-      rescue FailedNodeException
-        Djinn.log_warn(
-          "Failed to forward update_cron call to shadow (#{get_shadow}).")
+      rescue FailedNodeException => e
+        Djinn.log_warn("Failed to forward update_cron call to shadow " \
+                       "(#{get_shadow}): #{e.to_s}.")
         return NOT_READY
       end
     end
@@ -1475,7 +1495,12 @@ class Djinn
     }
     ips.each { |ip|
       acc = AppControllerClient.new(ip, @@secret)
-      response = acc.set_node_read_only(read_only)
+      begin
+        response = acc.set_node_read_only(read_only)
+      rescue FailedNodeException => e
+        Djinn.log_warn("Failed to set read_only on #{ip}: #{e.to_s}.")
+        return INVALID_REQUEST
+      end
       unless response == 'OK'
         Djinn.log_warn("set_read_only: #{ip} responded with #{response}.")
         return response
@@ -1500,8 +1525,8 @@ class Djinn
       acc = AppControllerClient.new(get_db_master.private_ip, @@secret)
       begin
         return acc.primary_db_is_up
-      rescue FailedNodeException
-        Djinn.log_warn("Unable to ask #{primary_ip} if database is ready.")
+      rescue FailedNodeException => e
+        Djinn.log_warn("Unable to ask #{primary_ip} if database is ready: #{e.to_s}.")
         return NOT_READY
       end
     end
@@ -1816,7 +1841,8 @@ class Djinn
       # We act here if options or roles for this node changed.
       check_role_change(old_options, old_roles)
 
-      # The master node has more work to do.
+      # The master node needs first to update the stats of the nodes, and
+      # backup the deployment state for all other nodes to read.
       if my_node.is_shadow?
         write_tools_config
         if update_stats_thread.alive?
@@ -1828,19 +1854,18 @@ class Djinn
       end
 
       # Load balancers (and shadow) needs to setup new applications.
-      if my_node.is_load_balancer?
+      if my_node.is_load_balancer? || my_node.is_shadow?
         versions_loaded_now = []
         APPS_LOCK.synchronize { versions_loaded_now = @versions_loaded.clone }
 
         # Starts apps that are not running yet but they should.
+        versions_to_load = versions_loaded_now - my_versions_loaded
         if my_node.is_shadow?
           begin
             versions_to_load = ZKInterface.get_versions - versions_loaded_now
           rescue FailedZooKeeperOperationException
             versions_to_load = []
           end
-        else
-          versions_to_load = versions_loaded_now - my_versions_loaded
         end
         versions_to_load.each { |version_key|
           APPS_LOCK.synchronize {
@@ -1848,18 +1873,25 @@ class Djinn
             setup_appengine_version(version_key)
           }
         }
-        # In addition only shadow kick off the autoscaler.
-        APPS_LOCK.synchronize { scale_deployment if my_node.is_shadow? }
-      end
 
-      # Load balancers and shadow need to check/update applications that have
-      # been undeployed and nginx/haproxy.
-      if my_node.is_shadow? or my_node.is_load_balancer?
-        APPS_LOCK.synchronize {
-          check_stopped_apps
-        }
+        # In addition only shadow kick off the autoscaler and manages
+        # running instances.
+        if my_node.is_shadow?
+          missing_nodes = 0
+          @state_change_lock.synchronize {
+            missing_nodes = Integer(@options['min_machines']) - @nodes.length
+          }
+          APPS_LOCK.synchronize {
+            scale_deployment
+            scale_up_instances(missing_nodes) if missing_nodes > 0
+          }
+        end
+
+        # Nodes need to clean up after removed applications.
+        APPS_LOCK.synchronize { check_stopped_apps }
       end
       if my_node.is_load_balancer?
+        # Load balancers need to regenerate nginx/haproxy configuration if needed.
         update_db_haproxy
         APPS_LOCK.synchronize { regenerate_routing_config }
       end
@@ -1870,16 +1902,26 @@ class Djinn
         if my_node.is_shadow? && @options['autoscale'].downcase != "true"
           Djinn.log_info("--- This deployment has autoscale disabled.")
         end
-        begin
-          stats = JSON.parse(get_node_stats_json(secret))
+        stats = nil
+        ret = get_node_stats_json(secret)
+        if ret == BAD_SECRET_MSG
+          Djinn.log_warn("Bad secret while getting local stats!")
+        elsif ret == INVALID_REQUEST
+          Djinn.log_warn("Failed to retrieve local stats!")
+        else
+          begin
+            stats = JSON.parse(ret)
+          rescue JSON::ParserError
+            Djinn.log_warn("Failed to parse local stats JSON.")
+          end
+        end
+        unless stats.nil?
           Djinn.log_info("--- Node at #{stats['public_ip']} has " \
             "#{stats['memory']['available']/MEGABYTE_DIVISOR}MB memory available " \
             "and knows about these apps #{stats['apps']}.")
           Djinn.log_debug("--- Node stats: #{JSON.pretty_generate(stats)}")
-          last_print = Time.now.to_i
-        rescue SOAP::FaultError
-          Djinn.log_warn("Failed to get local node stats: skipping stats")
         end
+        last_print = Time.now.to_i
       end
 
       # Let's make sure we don't drift the duty cycle too much.
@@ -2218,7 +2260,7 @@ class Djinn
 
       # We create here the needed nodes, with open role and no disk.
       disks = Array.new(new_nodes_roles.length, nil)
-      imc = InfrastructureManagerClient.new(@@secret)
+      imc = InfrastructureManagerClient.new(@@secret, my_node.private_ip)
       begin
         new_nodes_info = imc.run_instances(new_nodes_roles.length, @options,
            new_nodes_roles.values, disks)
@@ -2933,7 +2975,7 @@ class Djinn
 
       ip = zk_list.sample
       Djinn.log_info("Trying to use zookeeper server at #{ip}.")
-      ZKInterface.init_to_ip(HelperFunctions.local_ip, ip.to_s)
+      ZKInterface.init_to_ip(@my_private_ip, ip.to_s)
     }
     Djinn.log_debug("Found zookeeper server.")
   end
@@ -3062,18 +3104,19 @@ class Djinn
   def find_me_in_locations
     @my_index = nil
     all_local_ips = HelperFunctions.get_all_local_ips
-    Djinn.log_debug("Searching for a node with any of these private IPs: " \
-      "#{all_local_ips.join(', ')}")
-    Djinn.log_debug("All nodes are: #{@nodes.join(', ')}")
+    if all_local_ips.length > 1
+      Djinn.log_warn("This node has multiple private IPs: " \
+        "#{all_local_ips.join(', ')}")
+    end
 
     @state_change_lock.synchronize {
       @nodes.each_with_index { |node, index|
         all_local_ips.each { |ip|
           if ip == node.private_ip
             @my_index = index
-            HelperFunctions.set_local_ip(node.private_ip)
             @my_public_ip = node.public_ip
             @my_private_ip = node.private_ip
+            Djinn.log_info("Local IP recorded and used is #{ip}.")
             return
           end
         }
@@ -3142,7 +3185,7 @@ class Djinn
           db_master = node.private_ip if node.roles.include?('db_master')
         }
       }
-      setup_db_config_files(db_master)
+      setup_db_config_files(db_master, my_node.private_ip)
 
       threads << Thread.new {
         Djinn.log_info("Starting database services.")
@@ -3407,7 +3450,7 @@ class Djinn
   def start_hermes
     @state = "Starting Hermes"
     Djinn.log_info("Starting Hermes service.")
-    start_cmd = "/opt/appscale_hermes/bin/appscale-hermes"
+    start_cmd = "/opt/appscale_venvs/hermes/bin/appscale-hermes"
     start_cmd << ' --verbose' if @options['verbose'].downcase == 'true'
     MonitInterface.start(:hermes, start_cmd)
     if my_node.is_shadow?
@@ -3541,107 +3584,28 @@ class Djinn
     Djinn.log_info("Done stopping groomer service.")
   end
 
-  def is_hybrid_cloud?
-    if @options['infrastructure'].nil?
-      false
-    else
-      @options['infrastructure'] == "hybrid"
-    end
-  end
-
   def is_cloud?
     return ['ec2', 'euca', 'gce', 'azure'].include?(@options['infrastructure'])
   end
 
-  def restore_from_db?
-    @options['restore_from_tar'] || @options['restore_from_ebs']
-  end
-
-  def build_appcontroller_client
-    Djinn.log_info('Building uncommitted appcontroller client changes')
-    unless system('pip install --upgrade --no-deps ' \
-                  "#{APPSCALE_HOME}/AppControllerClient > /dev/null 2>&1")
-      Djinn.log_error('Unable to build appcontroller client (install failed).')
+  def update_python_package(target, pip="pip")
+    Djinn.log_info("Building uncommitted changes for '#{target}' using #{pip}")
+    log_file = '/var/log/appscale/pip_installation.log'
+    cmd = "#{pip} install --upgrade --no-deps #{target}"
+    system("echo \"$(date '+\%F \%T') Executing '#{cmd}'\" >> #{log_file}")
+    unless system("#{cmd}" + " >> #{log_file} 2>&1")
+      Djinn.log_error("Unable to update '#{target}' using #{pip} " \
+                      "(install failed).")
       return
     end
-    unless system('pip install ' \
-                  "#{APPSCALE_HOME}/AppControllerClient > /dev/null 2>&1")
-      Djinn.log_error('Unable to build appcontroller client (install dependencies failed).')
+    cmd = "#{pip} install #{target}"
+    system("echo \"$(date '+\%F \%T') Executing '#{cmd}'\" >> #{log_file}")
+    unless system("#{cmd}" + " >> #{log_file} 2>&1")
+      Djinn.log_error("Unable to update '#{target}' using #{pip} " \
+                      "(install dependencies failed).")
       return
     end
-    Djinn.log_info('Finished building appcontroller client.')
-  end
-
-  def build_taskqueue
-    Djinn.log_info('Building uncommitted taskqueue changes')
-    extras = TaskQueue::OPTIONAL_FEATURES.join(',')
-    unless system('pip install --upgrade --no-deps ' \
-                  "#{APPSCALE_HOME}/AppTaskQueue[#{extras}] > /dev/null 2>&1")
-      Djinn.log_error('Unable to build taskqueue (install failed).')
-      return
-    end
-    unless system('pip install ' \
-                  "#{APPSCALE_HOME}/AppTaskQueue[#{extras}] > /dev/null 2>&1")
-      Djinn.log_error('Unable to build taskqueue (install dependencies failed).')
-      return
-    end
-    Djinn.log_info('Finished building taskqueue.')
-  end
-
-  def build_datastore
-    Djinn.log_info('Building uncommitted datastore changes')
-    unless system('pip install --upgrade --no-deps ' \
-                  "#{APPSCALE_HOME}/AppDB > /dev/null 2>&1")
-      Djinn.log_error('Unable to build datastore (install failed).')
-      return
-    end
-    unless system("pip install #{APPSCALE_HOME}/AppDB > /dev/null 2>&1")
-      Djinn.log_error('Unable to build datastore (install dependencies failed).')
-      return
-    end
-    Djinn.log_info('Finished building datastore.')
-  end
-
-  def build_common
-    Djinn.log_info('Building uncommitted common changes')
-    unless system('pip install --upgrade --no-deps ' \
-                  "#{APPSCALE_HOME}/common > /dev/null 2>&1")
-      Djinn.log_error('Unable to build common (install failed).')
-      return
-    end
-    unless system("pip install #{APPSCALE_HOME}/common > /dev/null 2>&1")
-      Djinn.log_error('Unable to build common (install dependencies failed).')
-      return
-    end
-    Djinn.log_info('Finished building common.')
-  end
-
-  def build_admin_server
-    Djinn.log_info('Building uncommitted AdminServer changes')
-    unless system('pip install --upgrade --no-deps ' \
-                  "#{APPSCALE_HOME}/AdminServer > /dev/null 2>&1")
-      Djinn.log_error('Unable to build AdminServer (install failed).')
-      return
-    end
-    unless system("pip install #{APPSCALE_HOME}/AdminServer > /dev/null 2>&1")
-      Djinn.log_error('Unable to build AdminServer (install dependencies failed).')
-      return
-    end
-    Djinn.log_info('Finished building AdminServer.')
-  end
-
-  def build_infrastructure_manager
-    Djinn.log_info('Building uncommitted InfrastructureManager changes')
-    unless system('pip install --upgrade --no-deps ' +
-                  "#{APPSCALE_HOME}/InfrastructureManager > /dev/null 2>&1")
-      Djinn.log_error('Unable to build InfrastructureManager (install failed).')
-      return
-    end
-    unless system("pip install #{APPSCALE_HOME}/InfrastructureManager > /dev/null 2>&1")
-      Djinn.log_error('Unable to build InfrastructureManager (install dependencies failed).')
-      return
-    end
-    Djinn.log_info('Finished building InfrastructureManager.')
+    Djinn.log_info("Finished building target '#{target}' using #{pip}.")
   end
 
   def build_java_appserver
@@ -3670,23 +3634,8 @@ class Djinn
     end
   end
 
-  def build_hermes
-    Djinn.log_info('Building uncommitted Hermes changes')
-    unless system('/opt/appscale_hermes/bin/pip install --upgrade --no-deps ' +
-                  "#{APPSCALE_HOME}/Hermes > /dev/null 2>&1")
-      Djinn.log_error('Unable to build Hermes (install failed).')
-      return
-    end
-    unless system('/opt/appscale_hermes/bin/pip install ' +
-                  "#{APPSCALE_HOME}/Hermes > /dev/null 2>&1")
-      Djinn.log_error('Unable to build Hermes (install dependencies failed).')
-      return
-    end
-    Djinn.log_info('Finished building Hermes.')
-  end
-
   def build_api_server
-    Djinn.log_info('Building uncommitted APIServer changes')
+    Djinn.log_info('Compiling APIServer proto files')
     src = File.join(APPSCALE_HOME, 'APIServer')
     proto_dest = File.join(src, 'appscale', 'api_server')
     unless system("protoc --proto_path=#{src} --python_out=#{proto_dest} " \
@@ -3694,36 +3643,49 @@ class Djinn
       Djinn.log_error('Unable to compile APIServer proto files')
       return
     end
-
-    api_server_venv = File.join('/', 'opt', 'appscale_api_server')
-    upgrade_package = "source #{api_server_venv}/bin/activate && " \
-      "pip install --upgrade --no-deps #{src} > /dev/null 2>&1"
-    unless system("bash -c '#{upgrade_package}'")
-      Djinn.log_error('Unable to build APIServer (install failed).')
-      return
-    end
-    upgrade_deps = "source #{api_server_venv}/bin/activate && " \
-      "pip install #{src} > /dev/null 2>&1"
-    unless system("bash -c '#{upgrade_deps}'")
-      Djinn.log_error(
-        'Unable to build APIServer (install dependencies failed).')
-      return
-    end
-    Djinn.log_info('Finished building APIServer.')
+    update_python_package(src, '/opt/appscale_venvs/api_server/bin/pip')
   end
 
   # Run a build on modified directories so that changes will take effect.
   def build_uncommitted_changes
     status = `git -C #{APPSCALE_HOME} status`
-    build_appcontroller_client if status.include?('AppControllerClient')
-    build_admin_server if status.include?('AdminServer')
-    build_taskqueue if status.include?('AppTaskQueue')
-    build_datastore if status.include?('AppDB')
-    build_common if status.include?('common')
-    build_infrastructure_manager if status.include?('InfrastructureManager')
+
+    # Update Python packages across corresponding virtual environments
+    if status.include?('common')
+      update_python_package("#{APPSCALE_HOME}/common")
+      update_python_package("#{APPSCALE_HOME}/common",
+                            '/opt/appscale_venvs/api_server/bin/pip')
+      update_python_package("#{APPSCALE_HOME}/common",
+                            '/opt/appscale_venvs/hermes/bin/pip')
+    end
+    if status.include?('AppControllerClient')
+      update_python_package("#{APPSCALE_HOME}/AppControllerClient")
+    end
+    if status.include?('AdminServer')
+      update_python_package("#{APPSCALE_HOME}/AdminServer")
+      update_python_package("#{APPSCALE_HOME}/AdminServer",
+                            '/opt/appscale_venvs/hermes/bin/pip')
+    end
+    if status.include?('AppTaskQueue')
+      extras = TaskQueue::OPTIONAL_FEATURES.join(',')
+      update_python_package("#{APPSCALE_HOME}/AppTaskQueue[#{extras}]")
+    end
+    if status.include?('AppDB')
+      update_python_package("#{APPSCALE_HOME}/AppDB")
+    end
+    if status.include?('InfrastructureManager')
+      update_python_package("#{APPSCALE_HOME}/InfrastructureManager")
+    end
+    if status.include?('Hermes')
+      update_python_package("#{APPSCALE_HOME}/Hermes",
+                            '/opt/appscale_venvs/hermes/bin/pip')
+    end
+    if status.include?('APIServer')
+      build_api_server
+    end
+
+    # Update Java AppServer
     build_java_appserver if status.include?('AppServer_Java')
-    build_hermes if status.include?('Hermes')
-    build_api_server if status.include?('APIServer')
   end
 
   def configure_ejabberd_cert
@@ -4160,7 +4122,7 @@ HOSTS
       return
     end
 
-    imc = InfrastructureManagerClient.new(@@secret)
+    imc = InfrastructureManagerClient.new(@@secret, my_node.private_ip)
     begin
       device_name = imc.attach_disk(@options, my_node.disk, my_node.instance_id)
     rescue FailedNodeException
@@ -4245,14 +4207,6 @@ HOSTS
     if my_node.is_shadow? and not my_node.is_compute?
       write_app_logrotate
       Djinn.log_info("Copying logrotate script for centralized app logs")
-    end
-
-    if my_node.is_load_balancer?
-      # Make HAProxy instance stats accessible after a reboot.
-      if HAProxy.valid_config?(HAProxy::MAIN_CONFIG_FILE) &&
-          !MonitInterface.is_running?(:apps_haproxy)
-        HAProxy.apps_start
-      end
     end
 
     write_locations
@@ -4597,40 +4551,50 @@ HOSTS
     end
     Djinn.log_info("check_stopped_apps: Versions running: #{zookeeper_versions}")
     removed_versions = []
-    if my_node.is_shadow?
-      CronHelper.list_app_crontabs.each { |app|
-        match = app.match(CronHelper::PROJECT_ID_REGEX)
-        next if match.nil?
 
-        project_id = match.captures.first
-        default_version_key = "#{project_id}_#{DEFAULT_SERVICE}_#{DEFAULT_VERSION}"
+    # Remove old crontab and syslog configuration. Only the master node
+    # should do it, but since the role could be assumed by different
+    # nodes, we make sure the removal are idempotent and we run it on all
+    # nodes running this method.
+    CronHelper.list_app_crontabs.each { |app|
+      match = app.match(CronHelper::PROJECT_ID_REGEX)
+      next if match.nil?
 
-        next if zookeeper_versions.include?(default_version_key)
+      project_id = match.captures.first
+      default_version_key = "#{project_id}_#{DEFAULT_SERVICE}_#{DEFAULT_VERSION}"
 
-        next if RESERVED_APPS.include?(project_id)
+      next if zookeeper_versions.include?(default_version_key)
 
-        Djinn.log_info(
-          "#{default_version_key} is no longer running: removing crontabs.")
-        CronHelper.clear_app_crontab(project_id)
-        removed_versions << default_version_key
-      }
-      Dir.glob("/etc/rsyslog.d/10-*_*_*.conf").each { |app|
-        match = app.match(/10-(.*_.*_.*).conf/)
-        next if match.nil?
+      next if RESERVED_APPS.include?(project_id)
 
-        version_key = match.captures.first
-        next if zookeeper_versions.include?(version_key)
+      Djinn.log_info(
+        "#{default_version_key} is no longer running: removing crontabs.")
+      CronHelper.clear_app_crontab(project_id)
+      removed_versions << default_version_key
+    }
+    Dir.glob("/etc/rsyslog.d/10-*_*_*.conf").each { |app|
+      match = app.match(/10-(.*_.*_.*).conf/)
+      next if match.nil?
 
-        project_id = version_key.split(VERSION_PATH_SEPARATOR).first
-        next if RESERVED_APPS.include?(project_id)
+      version_key = match.captures.first
+      next if zookeeper_versions.include?(version_key)
 
-        Djinn.log_info(
-          "#{version_key} is no longer running: removing log configuration.")
-        FileUtils.rm_f(get_rsyslog_conf(version_key))
+      project_id = version_key.split(VERSION_PATH_SEPARATOR).first
+      next if RESERVED_APPS.include?(project_id)
+
+      Djinn.log_info(
+        "#{version_key} is no longer running: removing log configuration.")
+      begin
+        FileUtils.rm(get_rsyslog_conf(version_key))
         HelperFunctions.shell("service rsyslog restart")
-        removed_versions << version_key
-      }
-    end
+      rescue Errno::ENOENT, Errno::EACCES
+        Djinn.log_debug("Old syslog for #{version_key} wasn't there.")
+      end
+      removed_versions << version_key
+    }
+
+    # Load balancers have to adjust nginx and haproxy to remove the
+    # application routings.
     if my_node.is_load_balancer?
       MonitInterface.running_xmpp.each { |xmpp_app|
         match = xmpp_app.match(/xmpp-(.*)/)
@@ -4737,9 +4701,11 @@ HOSTS
     rsyslog_prop = ':syslogtag'
     rsyslog_version = Gem::Version.new(`rsyslogd -v`.split[1].chomp(','))
     rsyslog_prop = ':programname' if rsyslog_version < Gem::Version.new('8.12')
+    rsyslog_propval = "app_#{Digest::SHA1.hexdigest(version_key)[0...28]}"
 
     app_log_template = HelperFunctions.read_file(RSYSLOG_TEMPLATE_LOCATION)
     app_log_config = app_log_template.gsub('{property}', rsyslog_prop)
+    app_log_config = app_log_config.gsub('{property_value}', rsyslog_propval)
     app_log_config = app_log_config.gsub('{version}', version_key)
     unless existing_app_log_config == app_log_config
       Djinn.log_info("Installing log configuration for #{version_key}.")
@@ -4808,7 +4774,6 @@ HOSTS
   # on the statistics of the application and the loads of the various
   # services.
   def scale_deployment
-    needed_appservers = 0
     begin
       configured_versions = ZKInterface.get_versions
     rescue FailedZooKeeperOperationException
@@ -4826,8 +4791,10 @@ HOSTS
       # Get the desired changes in the number of AppServers.
       delta_appservers = get_scaling_info_for_version(version_key)
       if delta_appservers > 0
-        needed_appservers += try_to_scale_up(version_key, delta_appservers)
-        scale_up_instances(needed_appservers)
+        # try_to_scale_up returns back the number of instances desired
+        # based on the current application requirements (memory and cpu)
+        # and the instance_type we have for autoscaling.
+        scale_up_instances(try_to_scale_up(version_key, delta_appservers))
       elsif delta_appservers < 0
         try_to_scale_down(version_key, delta_appservers.abs)
         scale_down_instances
@@ -4840,32 +4807,26 @@ HOSTS
   # application and the additional AppServers we need to accomodate.
   #
   # Args:
-  #   needed_appservers: The number of additional AppServers needed.
-  def scale_up_instances(needed_appservers)
+  #   needed_nodes: The number of additional nodes desired.
+  def scale_up_instances(needed_nodes)
     # Here we count the number of machines we need to spawn, and the roles
     # we need.
     vms_to_spawn = 0
     roles_needed = {}
     vm_scaleup_capacity = Integer(@options['max_machines']) - @nodes.length
 
-    Djinn.log_info("Need to start VMs for #{needed_appservers} more AppServers.")
+    Djinn.log_info("Asked to start #{needed_nodes} more VMs.")
 
-    if needed_appservers > 0
-      # TODO: Here we use 3 as an arbitrary number to calculate the number of machines
-      # needed to run those number of appservers. That will change in the next step
-      # to improve autoscaling/downscaling by using the capacity as a measure.
-
-      Integer(needed_appservers/3).downto(0) {
-        vms_to_spawn += 1
-        if vm_scaleup_capacity < vms_to_spawn
-          Djinn.log_warn("Only have capacity to start #{vm_scaleup_capacity}" \
-            " vms, so spawning only maximum allowable nodes.")
-          break
-        end
-        roles_needed["compute"] = [] unless roles_needed["compute"]
-        roles_needed["compute"] << "node-#{vms_to_spawn}"
-      }
-    end
+    needed_nodes.downto(1) {
+      vms_to_spawn += 1
+      if vm_scaleup_capacity < vms_to_spawn
+        Djinn.log_warn("Only have capacity to start #{vm_scaleup_capacity}" \
+          " vms, so spawning only maximum allowable nodes.")
+        break
+      end
+      roles_needed["compute"] = [] unless roles_needed["compute"]
+      roles_needed["compute"] << "node-#{vms_to_spawn}"
+    }
 
     # Check if we need to spawn VMs and the InfrastructureManager is
     # available to do so.
@@ -4886,7 +4847,7 @@ HOSTS
 
     Thread.new {
       SCALE_LOCK.synchronize {
-        Djinn.log_info("We need #{vms_to_spawn} more VMs.")
+        Djinn.log_info("Starting #{vms_to_spawn} more VMs.")
 
         result = start_roles_on_nodes(JSON.dump(roles_needed), @@secret)
         if result != "OK"
@@ -4982,7 +4943,7 @@ HOSTS
 
     # Terminate instance if we are in cloud.
     if is_cloud?
-      imc = InfrastructureManagerClient.new(@@secret)
+      imc = InfrastructureManagerClient.new(@@secret, my_node.private_ip)
       begin
         imc.terminate_instances(@options, node_to_remove.instance_id)
       rescue FailedNodeException
@@ -5090,12 +5051,12 @@ HOSTS
     min, max = get_min_max_from_version_details(version_details)
 
     # Let's make sure we have the minimum number of AppServers running.
-    Djinn.log_debug("Evaluating #{version_key} for scaling.")
-    if @app_info_map[version_key]['appservers'].nil?
-      num_appservers = 0
-    else
+    num_appservers = 0
+    unless @app_info_map[version_key]['appservers'].nil?
       num_appservers = @app_info_map[version_key]['appservers'].length
     end
+    Djinn.log_debug("Evaluating #{version_key} for scaling " \
+                    "(#{num_appservers} AppServers allocated).")
 
     if num_appservers < min
       Djinn.log_info(
@@ -5312,15 +5273,31 @@ HOSTS
     return current_hosts
   end
 
-  # Try to add an AppServer for the specified version, ensuring
-  # that a minimum number of AppServers is always kept.
+  # This method computes how many nodes will be needed to satisfy a
+  # request to start a num_appservers AppServers each with a certain
+  # memory requirement.
+  #
+  # Args:
+  #   num_appservers: An Integer indicationg the desired number of
+  #     AppServers.
+  #   max_app_mem: An Integer indicating the maximum memory per AppServer.
+  # Returns:
+  #   An Integer indicating the needed number of nodes.
+  def appservers_to_nodes(num_appservers, max_app_mem)
+    # TODO: We should check the cores/RAM of @options['instance_type'],
+    # then understand how many AppServers of max_app_mem each we can fit.
+    return (num_appservers/3.0).ceil
+  end
+
+  # Try to add an AppServer for the specified version, ensuring that a
+  # minimum number of AppServers is always kept.
   #
   # Args:
   #   version_key: A String containing the version key.
   #   delta_appservers: The desired number of new AppServers.
   # Returns:
-  #   An Integer indicating the number of AppServers we didn't start (0
-  #     if we started all).
+  #   An Integer indicating the number of nodes we need to scale to
+  #     accomodate the request.
   def try_to_scale_up(version_key, delta_appservers)
     # Select an compute machine if it has enough resources to support
     # another AppServer for this version.
@@ -5340,7 +5317,7 @@ HOSTS
         project_id, service_id, version_id)
     rescue VersionNotFound
       Djinn.log_info("Not scaling #{version_key} because it no longer exists")
-      return false
+      return 0
     end
 
     max_app_mem = Integer(@options['default_max_appserver_memory'])
@@ -5403,9 +5380,9 @@ HOSTS
     # ensure redundancy for the application.
     delta_appservers.downto(1) { |delta|
       if available_hosts.empty?
-        Djinn.log_info(
-          "No compute node is available to scale #{version_key}.")
-        return delta
+        Djinn.log_info("No compute node is available to scale #{version_key}: " \
+                       "still need #{delta} AppServers.")
+        return appservers_to_nodes(delta, max_app_mem)
       end
 
       appserver_to_use = nil
@@ -5757,8 +5734,14 @@ HOSTS
     return BAD_SECRET_MSG unless valid_secret?(secret)
 
     # Get stats from SystemManager.
-    imc = InfrastructureManagerClient.new(secret)
-    system_stats = JSON.load(imc.get_system_stats)
+    imc = InfrastructureManagerClient.new(secret, my_node.private_ip)
+    begin
+      system_stats = JSON.load(imc.get_system_stats)
+    rescue SOAP::FaultError, FailedNodeException => exception
+      Djinn.log_warn("Failed to talk to [IM]: #{exception.message}")
+      return INVALID_REQUEST
+    end
+
     Djinn.log_debug('get_node_stats_json: got system stats.')
 
     # Combine all useful stats and return.
