@@ -5,18 +5,20 @@ import multiprocessing
 import random
 import time
 
+from appscale.common.retrying import retry
 from appscale.datastore import appscale_datastore_batch
 from appscale.datastore.backup.datastore_backup import DatastoreBackup
 from appscale.datastore.datastore_distributed import DatastoreDistributed
-from appscale.datastore.dbconstants import InternalError
 from appscale.datastore.index_manager import IndexManager
+from appscale.datastore.cassandra_env.cassandra_interface import (
+  LARGE_BATCH_THRESHOLD)
 from appscale.datastore.utils import tornado_synchronous
 from appscale.datastore.zkappscale import zktransaction as zk
 from appscale.datastore.zkappscale.transaction_manager import (
-  TransactionManager)
+  TransactionManager
+)
 
 from google.appengine.datastore import datastore_pb
-from google.appengine.datastore import entity_pb
 
 logger = logging.getLogger(__name__)
 
@@ -81,13 +83,13 @@ class DatastoreRestore(multiprocessing.Process):
         self.run_restore()
         try:
           self.zoo_keeper.release_lock_with_path(zk.DS_RESTORE_LOCK_PATH)
-        except zk.ZKTransactionException, zk_exception:
-          logger.error("Unable to release zk lock {0}.".\
-            format(str(zk_exception)))
+        except zk.ZKTransactionException as zk_exception:
+          logger.error("Unable to release zk lock {}.".
+                       format(str(zk_exception)))
         break
       else:
         logger.info("Did not get the restore lock. Another instance may be "
-          "running.")
+                    "running.")
         time.sleep(random.randint(1, self.LOCK_POLL_PERIOD))
 
   def get_restore_lock(self):
@@ -98,53 +100,31 @@ class DatastoreRestore(multiprocessing.Process):
     """
     return self.zoo_keeper.get_lock_with_path(zk.DS_RESTORE_LOCK_PATH)
 
+  @retry(max_retries=None, retrying_timeout=None)
   def store_entity_batch(self, entity_batch):
     """ Stores the given entity batch.
 
     Args:
       entity_batch: A list of entities to store.
-    Returns:
-      True on success, False otherwise.
     """
-    logger.debug("Entity batch to process: {0}".format(entity_batch))
-
-    # Convert encoded entities to EntityProto objects, change the app ID if
-    # it's different than the original and encode again.
-    new_entities_encoded = []
-    ent_protos = []
-    for entity in entity_batch:
-      ent_proto = entity_pb.EntityProto()
-      ent_proto.ParseFromString(entity)
-      ent_proto.key().set_app(self.app_id)
-
-      ent_protos.append(ent_proto)
-      new_entities_encoded.append(ent_proto.Encode())
-    logger.debug("Entities encoded: {0}".format(new_entities_encoded))
+    logger.debug("Entity batch to process: %s", entity_batch)
 
     # Create a PutRequest with the entities to be stored.
+    first = True
     put_request = datastore_pb.PutRequest()
     put_response = datastore_pb.PutResponse()
-    for entity in new_entities_encoded:
+    for entity in entity_batch:
       new_entity = put_request.add_entity()
       new_entity.MergeFromString(entity)
-    logger.debug("Put request: {0}".format(put_request))
+      new_entity.key().set_app(self.app_id)
+      if first:
+        logger.info('First key in batch: {}'
+                    .format(str(new_entity.key()).replace('\n', ' ')))
+      first = False
+    logger.debug("Put request: %s", put_request)
 
-    try:
-      self.dynamic_put_sync(self.app_id, put_request, put_response)
-      self.entities_restored += len(ent_protos)
-    except zk.ZKInternalException, zkie:
-      logger.error("ZK internal exception for app id {0}, " \
-        "info {1}".format(self.app_id, str(zkie)))
-      return False
-    except zk.ZKTransactionException, zkte:
-      logger.error("Concurrent transaction exception for app id {0}, " \
-        "info {1}".format(self.app_id, str(zkte)))
-      return False
-    except InternalError:
-      logger.exception('Unable to write entity')
-      return False
-
-    return True
+    self.dynamic_put_sync(self.app_id, put_request, put_response)
+    self.entities_restored += len(entity_batch)
 
   def read_from_file_and_restore(self, backup_file):
     """ Reads entities from backup file and stores them in the datastore.
@@ -153,18 +133,26 @@ class DatastoreRestore(multiprocessing.Process):
       backup_file: A str, the backup file location to restore from.
     """
     entities_to_store = []
+    batch_bytes = 0
+    # Keep the batch size relatively small to account for index entries.
+    batch_size_threshold = LARGE_BATCH_THRESHOLD / 4
     with open(backup_file, 'rb') as file_object:
       while True:
         try:
           entity = cPickle.load(file_object)
           entities_to_store.append(entity)
 
-          # If batch size is met, store entities.
-          if len(entities_to_store) == self.BATCH_SIZE:
+          batch_bytes += len(entity)
+
+          # If batch is reasonably large or count is satisfied, store entities.
+          bytes_exceeded = batch_bytes > batch_size_threshold
+          entities_exceeded = len(entities_to_store) == self.BATCH_SIZE
+          if bytes_exceeded or entities_exceeded:
             logger.info("Storing a batch of {0} entities...".
-              format(len(entities_to_store)))
+                        format(len(entities_to_store)))
             self.store_entity_batch(entities_to_store)
             entities_to_store = []
+            batch_bytes = 0
         except EOFError:
           break
 
