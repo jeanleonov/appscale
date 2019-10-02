@@ -108,12 +108,14 @@ async def list_processes():
     A list of Processes.
   """
   start_time = time.time()
+  host = appscale_info.get_private_ip()
 
   # Get dict with known processes (<PID>: <a list of tags>)
   known_processes = await get_known_processes()
   # Iterate through all processes and init majority of its info.
   pid_to_process = {
-    process.pid: init_process_info(process, known_processes)
+    '{}_{}_{}'.format(host, process.pid, int(process.create_time() * 1000)):
+    init_process_info(process, known_processes)
     for process in psutil.process_iter(attrs=PROCESS_ATTRS, ad_value=None)
   }
 
@@ -132,16 +134,12 @@ async def list_processes():
       return parent_process.own_tags
     return parent_process.own_tags + list_ancestors_tags(parent_process.ppid)
 
-  host = appscale_info.get_private_ip()
-
   # Set the rest of information about processes state
-  for p in pid_to_process.values():
+  for long_pid, p in pid_to_process.items():
     # Set unique process identifier
-    p.long_pid = '{}_{}_{}'.format(
-      host, p.pid, int(p.create_time*1000)
-    )
+    p.long_pid = long_pid
     # and *_1h_diff attributes
-    prev = Process.PREVIOUS_STATE.get(p.pid)
+    prev = Process.PREVIOUS_STATE.get(p.long_pid)
     if prev:
       # Compute one hour difference coefficient
       diff_coef = 60 * 60 / (start_time - prev.utc_timestamp)
@@ -152,18 +150,19 @@ async def list_processes():
       p.cpu_system_1h_diff = (
         (p.cpu_system - prev.cpu_system) * diff_coef
       )
-      p.disk_io_read_count_1h_diff = (
-        (p.disk_io_read_count - prev.disk_io_read_count) * diff_coef
-      )
-      p.disk_io_write_count_1h_diff = (
-        (p.disk_io_write_count - prev.disk_io_write_count) * diff_coef
-      )
-      p.disk_io_read_bytes_1h_diff = (
-        (p.disk_io_read_bytes - prev.disk_io_read_bytes) * diff_coef
-      )
-      p.disk_io_write_bytes_1h_diff = (
-        (p.disk_io_write_bytes - prev.disk_io_write_bytes) * diff_coef
-      )
+      if p.disk_io_read_count is not None:
+        p.disk_io_read_count_1h_diff = (
+          (p.disk_io_read_count - prev.disk_io_read_count) * diff_coef
+        )
+        p.disk_io_write_count_1h_diff = (
+          (p.disk_io_write_count - prev.disk_io_write_count) * diff_coef
+        )
+        p.disk_io_read_bytes_1h_diff = (
+          (p.disk_io_read_bytes - prev.disk_io_read_bytes) * diff_coef
+        )
+        p.disk_io_write_bytes_1h_diff = (
+          (p.disk_io_write_bytes - prev.disk_io_write_bytes) * diff_coef
+        )
       p.ctx_switches_voluntary_1h_diff = (
         (p.ctx_switches_voluntary - prev.ctx_switches_voluntary) * diff_coef
       )
@@ -269,10 +268,11 @@ def init_process_info(psutil_process, known_processes):
   process.memory_resident = memory_info.rss
   process.memory_virtual = memory_info.vms
   process.memory_shared = memory_info.shared
-  process.disk_io_read_count = io_counters.read_count
-  process.disk_io_write_count = io_counters.write_count
-  process.disk_io_read_bytes = io_counters.read_bytes
-  process.disk_io_write_bytes = io_counters.write_bytes
+  if io_counters:
+    process.disk_io_read_count = io_counters.read_count
+    process.disk_io_write_count = io_counters.write_count
+    process.disk_io_read_bytes = io_counters.read_bytes
+    process.disk_io_write_bytes = io_counters.write_bytes
   process.threads_num = process_info['num_threads']
   process.file_descriptors_num = process_info['num_fds']
   process.ctx_switches_voluntary = ctx_switches.voluntary
