@@ -12,117 +12,131 @@ def future(value=None):
   future_obj.set_result(value)
   return future_obj
 
-MONIT_STATUS = b"""
-The Monit daemon 5.6 uptime: 20h 22m
 
-Process 'haproxy'
-  status                            Running
-  monitoring status                 Monitored
-  pid                               8466
-  parent pid                        1
-  uptime                            20h 21m
-  children                          0
-  memory kilobytes                  8140
-  memory kilobytes total            8140
-  memory percent                    0.2%
-  memory percent total              0.2%
-  cpu percent                       0.0%
-  cpu percent total                 0.0%
-  data collected                    Wed, 19 Apr 2017 14:15:29
-
-File 'groomer_file_check'
-  status                            Accessible
-  monitoring status                 Monitored
-  permission                        644
-
-Process 'appmanagerserver'
-  status                            Not monitored
-  monitoring status                 Not monitored
-  data collected                    Wed, 19 Apr 2017 13:49:44
-
-Process 'app___my-25app-20003'
-  status                            Running
-  monitoring status                 Monitored
-  pid                               5045
-  parent pid                        5044
-  uptime                            21h 41m
-  children                          1
-  memory kilobytes                  65508
-  memory kilobytes total            132940
-  memory percent                    1.7%
-  memory percent total              3.5%
-  cpu percent                       0.0%
-  cpu percent total                 0.0%
-  port response time                0.000s to 10.10.9.111:20000 [DEFAULT via TCP]
-  data collected                    Wed, 19 Apr 2017 14:18:33
-
-System 'appscale-image0'
-  status                            Running
-  monitoring status                 Monitored
-  load average                      [0.23] [0.40] [0.46]
-  cpu                               2.8%us 2.4%sy 1.3%wa
-  memory usage                      2653952 kB [70.7%]
-  swap usage                        0 kB [0.0%]
-  data collected                    Wed, 19 Apr 2017 14:15:29
+# cat /lib/systemd/system/appscale-*.target
+# | grep -E "^After=.*\.service$" | cut -d "=" -f 2
+APPSCALE_TARGETS = b"""
+ejabberd.service                                                                                                                                                                                                                              
+nginx.service                                                                                                                                                                                                                                 
+rabbitmq-server.service                                                                                                                                                                                                                       
+zookeeper.service 
 """
 
-# `systemctl status solr.service | grep 'Main PID' | awk '{ print $3 }'`
-SYSTEMCTL_STATUS = b'28783'
+# systemctl --no-legend list-units "appscale-*.service" | cut -d " " -f 1
+APPSCALE_SERVICES = b"""
+appscale-blobstore.service
+appscale-cassandra.service
+appscale-controller.service
+appscale-groomer.service
+appscale-haproxy@app.service
+appscale-haproxy@service.service
+appscale-hermes.service
+appscale-infrastructure@basic.service
+appscale-instance-manager.service
+appscale-instance-run@testapp_mod1_v1_1570022208920-20000.service
+appscale-memcached.service
+appscale-transaction-groomer.service
+appscale-uaserver.service
+"""
+
+# systemctl show --property MainPID --value <SERVICE>
+SERVICE_PID_MAP = {
+  'ejabberd.service': b'9021',
+  'nginx.service': b'9022',
+  'rabbitmq-server.service': b'9023',
+  'zookeeper.service': b'9024',
+  'appscale-blobstore.service': b'10025',
+  'appscale-cassandra.service': b'10026',
+  'appscale-controller.service': b'10027',
+  'appscale-groomer.service': b'10028',
+  'appscale-haproxy@app.service': b'10029',
+  'appscale-haproxy@service.service': b'10030',
+  'appscale-hermes.service': b'10031',
+  'appscale-infrastructure@basic.service': b'10032',
+  'appscale-instance-manager.service': b'10033',
+  'appscale-instance-run@testapp_mod1_v1_1570022208920-20000.service': b'10034',
+  'appscale-memcached.service': b'10035',
+  'appscale-transaction-groomer.service': b'10036',
+  'appscale-uaserver.service': b'10037',
+}
+
+# for slice in /sys/fs/cgroup/systemd/appscale.slice/appscale-*.slice/; do
+#     sed -e "s|\$| ${slice}|" ${slice}/cgroup.procs
+# done
+APPSCALE_SLICE_PIDS = b"""
+11038 /sys/fs/cgroup/systemd/appscale.slice/appscale-datastore.slice/
+11039 /sys/fs/cgroup/systemd/appscale.slice/appscale-datastore.slice/
+11040 /sys/fs/cgroup/systemd/appscale.slice/appscale-search.slice/
+"""
 
 
 @pytest.mark.asyncio
 async def test_get_known_processes():
-  # Mock `monit status` output
-  monit_mock = MagicMock(returncode=0)
-  stdout = MONIT_STATUS
-  stderr = b''
-  monit_mock.communicate.return_value = future((stdout, stderr))
-  # Mock `systemctl status solr.service` output
-  systemctl_mock = MagicMock(returncode=0)
-  stdout = SYSTEMCTL_STATUS
-  stderr = b''
-  systemctl_mock.communicate.return_value = future((stdout, stderr))
-  # Mock ServiceManager.get_state result
-  state_mock = [
-    MagicMock(process=MagicMock(pid=9850), type='datastore'),
-    MagicMock(process=MagicMock(pid=9851), type='datastore'),
-    MagicMock(process=MagicMock(pid=9852), type='datastore'),
-    MagicMock(process=MagicMock(pid=3589), type='search'),
-    MagicMock(process=MagicMock(pid=4589), type='search'),
-  ]
+  subprocess_mocks = []
+
+  # Mock `cat /lib/systemd/system/appscale-*.target | ...` output
+  targets_mock = MagicMock(returncode=0)
+  stdout, stderr = APPSCALE_TARGETS, b''
+  targets_mock.communicate.return_value = future((stdout, stderr))
+  subprocess_mocks.append(('cat /lib/systemd/', targets_mock))
+
+  # Mock `systemctl --no-legend list-units "appscale-*.service" | ...` output
+  list_units_mock = MagicMock(returncode=0)
+  stdout, stderr = APPSCALE_SERVICES, b''
+  list_units_mock.communicate.return_value = future((stdout, stderr))
+  subprocess_mocks.append(('systemctl --no-legend list-units', list_units_mock))
+
+  # Mock `systemctl show --property MainPID --value <SERVICE>` output
+  for service, pid in SERVICE_PID_MAP.items():
+    show_mainpid_mock = MagicMock(returncode=0)
+    stdout, stderr = pid, b''
+    show_mainpid_mock.communicate.return_value = future((stdout, stderr))
+    subprocess_mocks.append(('--value {}'.format(service), show_mainpid_mock))
+
+  # Mock `for slice in /sys/fs/cgroup/systemd/appscale.slice/... ; do...` output
+  appscale_slice_pids_mock = MagicMock(returncode=0)
+  stdout, stderr = APPSCALE_SLICE_PIDS, b''
+  appscale_slice_pids_mock.communicate.return_value = future((stdout, stderr))
+  subprocess_mocks.append(('for slice in /sys/fs/', appscale_slice_pids_mock))
 
   def fake_subprocess_shell(command, **kwargs):
-    if command.startswith('monit'):
-      return future(monit_mock)
-    if command.startswith('systemctl'):
-      return future(systemctl_mock)
+    for matcher, command_mock in subprocess_mocks:
+      if matcher in command:
+        return future(command_mock)
     assert False, 'Unexpected command "{}"'.format(command)
 
   subprocess_patcher = patch(
     'asyncio.create_subprocess_shell',
     side_effect=fake_subprocess_shell
   )
-  service_manager_patcher = patch(
-    'appscale.admin.service_manager.ServiceManager.get_state',
-    return_value=state_mock
-  )
 
   # ^^^ ALL INPUTS ARE SPECIFIED (or mocked) ^^^
   with subprocess_patcher:
-    with service_manager_patcher:
-      # Calling method under test
-      known_processes = await process.get_known_processes()
+    # Calling method under test
+    known_processes = await process.get_known_processes()
 
   # ASSERTING EXPECTATIONS
   assert known_processes == {
-    8466: ['appscale', 'haproxy', 'haproxy'],
-    5045: ['appscale', 'application', 'app___my-25app-20003', 'app___my-25app'],
-    9850: ['appscale', 'datastore'],
-    9851: ['appscale', 'datastore'],
-    9852: ['appscale', 'datastore'],
-    3589: ['appscale', 'search'],
-    4589: ['appscale', 'search'],
-    28783: ['appscale', 'solr'],
+    9021: ['appscale', 'ejabberd'],
+    9022: ['appscale', 'nginx'],
+    9023: ['appscale', 'rabbitmq-server'],
+    9024: ['appscale', 'zookeeper'],
+    10025: ['appscale', 'blobstore'],
+    10026: ['appscale', 'cassandra'],
+    10027: ['appscale', 'controller'],
+    10028: ['appscale', 'groomer'],
+    10029: ['appscale', 'haproxy', '_app'],
+    10030: ['appscale', 'haproxy', '_service'],
+    10031: ['appscale', 'hermes'],
+    10032: ['appscale', 'infrastructure', '_basic'],
+    10033: ['appscale', 'instance-manager'],
+    10034: ['appscale', 'instance-run', '_testapp', '_mod1', '_v1', '_1570022208920-20000'],
+    10035: ['appscale', 'memcached'],
+    10036: ['appscale', 'transaction-groomer'],
+    10037: ['appscale', 'uaserver'],
+    11038: ['appscale', 'datastore'],
+    11039: ['appscale', 'datastore'],
+    11040: ['appscale', 'search'],
   }
 
 
